@@ -1,5 +1,6 @@
 import type { AtomicLabTest } from "./atomicCatalog";
 import type { DetectionExpectation } from "./types";
+import { LabHarnessUnavailableError } from "./types";
 
 export type LabHarnessRequest = {
   coaId: string;
@@ -23,44 +24,65 @@ export type LabHarnessResult = {
   observedDetections: DetectionExpectation[];
 };
 
+export type LabHarnessOptions = {
+  /** Dev/test only — never enable in production deployments. */
+  allowInProcess?: boolean;
+};
+
+function allowInProcessFallback(options?: LabHarnessOptions): boolean {
+  if (options?.allowInProcess) return true;
+  return import.meta.env.VITE_CYBER_ALLOW_IN_PROCESS_LAB === "true";
+}
+
 /**
  * Executes allowlisted atomic validation checks against the lab harness.
- * Uses VITE_CYBER_LAB_HARNESS_URL when set; otherwise in-process deterministic executor.
+ * Requires VITE_CYBER_LAB_HARNESS_URL unless an explicit in-process fallback is allowed.
  */
 export async function executeLabAtomicTests(
-  request: LabHarnessRequest
+  request: LabHarnessRequest,
+  options?: LabHarnessOptions
 ): Promise<LabHarnessResult> {
   const url = import.meta.env.VITE_CYBER_LAB_HARNESS_URL as string | undefined;
   if (url && url.trim() !== "") {
-    try {
-      return await executeViaHttpHarness(url.trim(), request);
-    } catch (err) {
-      console.warn(
-        "[cyber-emulation] External lab harness unreachable — falling back to in-process executor.",
-        err
-      );
-    }
+    return executeViaHttpHarness(url.trim(), request);
   }
-  return executeInProcessLabTests(request);
+
+  if (allowInProcessFallback(options)) {
+    return executeInProcessLabTests(request);
+  }
+
+  throw new LabHarnessUnavailableError(
+    "Lab harness URL is not configured. Set VITE_CYBER_LAB_HARNESS_URL or use simulated cyber mode."
+  );
 }
 
 async function executeViaHttpHarness(
   url: string,
   request: LabHarnessRequest
 ): Promise<LabHarnessResult> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      coaId: request.coaId,
-      citedFactIds: request.citedFactIds,
-      validatedActionIds: request.validatedActionIds,
-      testIds: request.tests.map((t) => t.testId),
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        coaId: request.coaId,
+        citedFactIds: request.citedFactIds,
+        validatedActionIds: request.validatedActionIds,
+        testIds: request.tests.map((t) => t.testId),
+      }),
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new LabHarnessUnavailableError(
+      `External lab harness unreachable at ${url}: ${detail}`
+    );
+  }
 
   if (!response.ok) {
-    throw new Error(`Lab harness HTTP ${response.status}: ${response.statusText}`);
+    throw new LabHarnessUnavailableError(
+      `Lab harness HTTP ${response.status}: ${response.statusText}`
+    );
   }
 
   const payload = (await response.json()) as {
@@ -68,28 +90,30 @@ async function executeViaHttpHarness(
   };
 
   if (!Array.isArray(payload.outcomes) || payload.outcomes.length === 0) {
-    throw new Error("Lab harness returned no outcomes");
+    throw new LabHarnessUnavailableError("Lab harness returned no outcomes");
   }
 
   return buildHarnessResult(request.tests, payload.outcomes, "http");
 }
 
 function executeInProcessLabTests(request: LabHarnessRequest): LabHarnessResult {
-  const outcomes: LabHarnessTestOutcome[] = request.tests.map((test) => {
-    const detectionObserved = deterministicDetectionObserved(
-      request.coaId,
-      test.testId,
-      request.citedFactIds
-    );
-    return {
-      testId: test.testId,
-      name: test.name,
-      techniqueId: test.techniqueId,
-      executed: true,
-      detectionObserved,
-      harness: "in-process" as const,
-    };
-  });
+  const outcomes: LabHarnessTestOutcome[] = request.tests.map(
+    (test) => {
+      const detectionObserved = deterministicDetectionObserved(
+        request.coaId,
+        test.testId,
+        request.citedFactIds
+      );
+      return {
+        testId: test.testId,
+        name: test.name,
+        techniqueId: test.techniqueId,
+        executed: true,
+        detectionObserved,
+        harness: "in-process" as const,
+      };
+    }
+  );
 
   return buildHarnessResult(request.tests, outcomes, "in-process");
 }

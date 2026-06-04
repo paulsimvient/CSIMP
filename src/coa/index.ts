@@ -2,12 +2,18 @@
 // Import from here, not from individual files.
 
 export type {
+  CoaOrigin,
+  CoaValidationStatus,
+  CoaCandidateStatus,
   CyberEffectsAnnotation,
   CoaAction,
   CoaCandidate,
   CoaId,
   CoaScores,
   CoaState,
+  MatrixOverlay,
+  PreparedExecution,
+  ExecutedCoaSnapshot,
   EffectsEngineContext,
   EffectsResult,
   EffectsSummary,
@@ -54,7 +60,38 @@ export {
   useResetCoa,
   useRunMetadata,
   useSelectedCoa,
+  useCreateOperatorDraft,
+  useMatrixOverlay,
+  usePrepareCoaExecution,
+  useExecutePreparedCoa,
+  useExecutedSnapshot,
+  useValidateOperatorCoa,
+  useUpdateMatrixOverlay,
+  getExecuteBlockers,
+  useDiscardOperatorCoa,
+  useRebaseOperatorCoa,
+  useMergeOperatorIntoParent,
 } from "./store";
+
+export { reorderCoaCandidates } from "./candidateOrdering";
+export {
+  mergeOperatorRevisionIntoParent,
+  validateOperatorCoaWithPipeline,
+  createImportedOperatorDraft,
+} from "./operatorCoaActions";
+export {
+  revalidateOperatorWithPipeline,
+  type OperatorPipelineContext,
+} from "./operatorPipelineRevalidation";
+export { evaluateScheduledRevision } from "./validatedIntelSolver";
+export { createImportedManualEntriesFromText } from "./manualSync";
+
+export {
+  collectRevisionBlockers,
+  materializeCoaRevision,
+  needsMaterializedValidation,
+  type MaterializeRevisionContext,
+} from "./materializeCoaRevision";
 
 export { assertCoaState } from "./assertions";
 export {

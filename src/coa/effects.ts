@@ -2,6 +2,7 @@ import {
   isCyberRelevantActionType,
   runCyberEmulationAdapter,
 } from "./cyberEmulation";
+import { LabHarnessUnavailableError } from "./cyberEmulation/types";
 import type { CyberEffectResult } from "./cyberEmulation";
 import type {
   CoaCandidate,
@@ -10,15 +11,27 @@ import type {
   EffectsEngineContext,
   EffectsEngineFn,
   EffectsResult,
+  EffectsSummary,
 } from "./types";
+
+const HEURISTIC_SUMMARY_FIELDS: Pick<
+  EffectsSummary,
+  "estimationMethod" | "isValidatedPrediction"
+> = {
+  estimationMethod: "deterministic-heuristic",
+  isValidatedPrediction: false,
+};
 
 export type { EffectsEngineFn, EffectsEngineContext };
 
 // ─── Stub effects engine ──────────────────────────────────────────────────────
 
-async function baseEffectsForCandidate(
-  candidate: CoaCandidate
-): Promise<EffectsResult> {
+/** Deterministic effects estimate for operator revisions (no cyber adapter). */
+export function buildRevisionEffects(candidate: CoaCandidate): EffectsResult {
+  return scoreEffectsForCandidate(candidate);
+}
+
+function scoreEffectsForCandidate(candidate: CoaCandidate): EffectsResult {
   const actionCount = candidate.selectedActions.length;
   const hasKineticAction = candidate.selectedActions.some((a) =>
     ["strike", "air"].includes(a.type)
@@ -55,6 +68,7 @@ async function baseEffectsForCandidate(
       timeToEffect: 3600 * (hasKineticAction ? 2 : 6),
       explanation,
       risks,
+      ...HEURISTIC_SUMMARY_FIELDS,
     },
     score,
     risk,
@@ -112,6 +126,7 @@ function mergeCyberIntoEffects(
       confidence,
       explanation,
       risks,
+      ...HEURISTIC_SUMMARY_FIELDS,
       cyberEffects: annotation,
     },
     score,
@@ -187,7 +202,7 @@ export const defaultEffectsEngine: EffectsEngineFn = async (candidates, context)
   for (const candidate of candidates) {
     if (candidate.status !== "sat") continue;
 
-    const base = await baseEffectsForCandidate(candidate);
+    const base = scoreEffectsForCandidate(candidate);
     const cyberCtx = resolveCyberContext(candidate, context);
     const hasCyber = cyberCtx.validatedActionIds.length > 0;
 
@@ -224,11 +239,23 @@ export const defaultEffectsEngine: EffectsEngineFn = async (candidates, context)
       });
       results[candidate.id] = mergeCyberIntoEffects(base, cyber);
     } catch (err) {
+      const harnessBlocked = err instanceof LabHarnessUnavailableError;
       console.warn(
         `[COA effects] Cyber emulation skipped for ${candidate.id}:`,
         err
       );
-      results[candidate.id] = base;
+      results[candidate.id] = {
+        ...base,
+        summary: {
+          ...base.summary,
+          risks: [
+            ...base.summary.risks,
+            harnessBlocked
+              ? "Lab harness unavailable — atomic cyber validation blocked (fail closed)"
+              : "Cyber emulation failed — using heuristic effects only",
+          ],
+        },
+      };
     }
   }
 

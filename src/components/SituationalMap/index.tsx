@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useScenePickOptional } from "../ops/ScenePickContext";
+import { useTaskComposerOptional } from "../ops/TaskComposerContext";
 import maplibregl from "maplibre-gl";
 import { Protocol } from "pmtiles";
 import type { ObservedFact } from "../../intel/types";
-import { contactKinematics, offsetCoordByMotion } from "../../scene/kinematics";
+import { classifyMapDisplayKind } from "../ops/sceneObjects";
+import { contactKinematics } from "../../scene/kinematics";
 import {
   buildTrackRingPolygonsGeoJson,
   circleRing,
@@ -25,6 +28,16 @@ import {
 import type { OverviewTrack } from "../ops/types";
 import "maplibre-gl/dist/maplibre-gl.css";
 import styles from "./SituationalMap.module.css";
+import { registerWargameIcons as registerWargameIconSet } from "./wargameIcons";
+import { WARGAME_ICON_URLS, type WargameIconKey } from "./wargameIconUrls";
+
+let wargameIconsRegistered = false;
+
+async function registerWargameIcons(map: maplibregl.Map): Promise<void> {
+  if (wargameIconsRegistered) return;
+  await registerWargameIconSet(map, WARGAME_ICON_URLS);
+  wargameIconsRegistered = true;
+}
 
 const PORT_A_CENTER = TAIWAN_CENTER;
 const LIGHT_OSM_STYLE: maplibregl.StyleSpecification = {
@@ -134,10 +147,10 @@ type SituationalMapProps = {
   focusNonce?: number;
   /** Facts highlighted from logistics matrix selection. */
   highlightedFactIds?: string[];
+  actionPreview?: GeoJSON.FeatureCollection | null;
   onFactIconClick?: (factId: string) => void;
   onPinnedCoordUpdate?: (factId: string, coord: [number, number]) => void;
   layerMode?: MapLayerMode;
-  simElapsedMs?: number;
 };
 
 export function SituationalMap({
@@ -147,10 +160,10 @@ export function SituationalMap({
   focusFactId,
   focusNonce,
   highlightedFactIds = [],
+  actionPreview = null,
   onFactIconClick,
   onPinnedCoordUpdate,
   layerMode = "main",
-  simElapsedMs = 0,
 }: SituationalMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -160,6 +173,9 @@ export function SituationalMap({
   const trackInteractionsBoundRef = useRef(false);
   const hasAutoFramedRef = useRef(false);
   const lastHandledFocusNonceRef = useRef<number | undefined>(undefined);
+  const scenePick = useScenePickOptional();
+  const composer = useTaskComposerOptional();
+  const mapPickActive = Boolean(scenePick?.activeFieldId) || Boolean(composer?.pickMode);
 
   onFactIconClickRef.current = onFactIconClick;
   onPinnedCoordUpdateRef.current = onPinnedCoordUpdate;
@@ -167,8 +183,8 @@ export function SituationalMap({
   const [mapTracksReady, setMapTracksReady] = useState(false);
   const sensorFootprints = useMemo(() => collectSensorFootprints(facts), [facts]);
   const points = useMemo(
-    () => buildFactPoints(facts, simElapsedMs, sensorFootprints),
-    [facts, simElapsedMs, sensorFootprints]
+    () => buildFactPoints(facts, sensorFootprints),
+    [facts, sensorFootprints]
   );
   const availableDomains = useMemo(
     () => Array.from(new Set(points.map((point) => point.domain))),
@@ -262,23 +278,65 @@ export function SituationalMap({
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!mapTracksReady || !map?.getLayer("track-icons") || trackInteractionsBoundRef.current) {
-      return;
-    }
-    trackInteractionsBoundRef.current = true;
+    if (!mapTracksReady || !map?.getLayer("track-icons")) return;
 
-    map.on("click", "track-icons", (event) => {
-      const feature = event.features?.[0];
-      const factId = feature?.properties?.factId;
-      if (factId) onFactIconClickRef.current?.(String(factId));
-    });
-    map.on("mouseenter", "track-icons", () => {
-      map.getCanvas().style.cursor = "pointer";
-    });
-    map.on("mouseleave", "track-icons", () => {
+    const TRACK_PICK_LAYERS = ["track-icons", "track-halo"];
+    const PICK_HIT_PAD_PX = 12;
+
+    const resolvePickFactId = (event: maplibregl.MapMouseEvent): string | undefined => {
+      const layers = TRACK_PICK_LAYERS.filter((id) => Boolean(map.getLayer(id)));
+      if (layers.length === 0) return undefined;
+
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [event.point.x - PICK_HIT_PAD_PX, event.point.y - PICK_HIT_PAD_PX],
+        [event.point.x + PICK_HIT_PAD_PX, event.point.y + PICK_HIT_PAD_PX],
+      ];
+      const features = map.queryRenderedFeatures(bbox, { layers });
+      const feature =
+        features.find((item) => item.layer.id === "track-icons") ?? features[0];
+      const raw = feature?.properties?.factId;
+      return raw === undefined || raw === null ? undefined : String(raw);
+    };
+
+    const handleTrackPick = (event: maplibregl.MapMouseEvent) => {
+      const factId = resolvePickFactId(event);
+      if (!factId) return;
+      onFactIconClickRef.current?.(factId);
+    };
+
+    const onMouseEnter = () => {
+      map.getCanvas().style.cursor = mapPickActive ? "crosshair" : "pointer";
+    };
+    const onMouseLeave = () => {
+      map.getCanvas().style.cursor = mapPickActive ? "crosshair" : "";
+    };
+
+    map.on("click", handleTrackPick);
+    map.on("mouseenter", "track-icons", onMouseEnter);
+    map.on("mouseenter", "track-halo", onMouseEnter);
+    map.on("mouseleave", "track-icons", onMouseLeave);
+    map.on("mouseleave", "track-halo", onMouseLeave);
+
+    return () => {
+      map.off("click", handleTrackPick);
+      map.off("mouseenter", "track-icons", onMouseEnter);
+      map.off("mouseenter", "track-halo", onMouseEnter);
+      map.off("mouseleave", "track-icons", onMouseLeave);
+      map.off("mouseleave", "track-halo", onMouseLeave);
+    };
+  }, [mapTracksReady, mapPickActive]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapTracksReady || !map) return;
+    if (mapPickActive) {
+      map.getCanvas().style.cursor = "crosshair";
+      map.dragPan.disable();
+    } else {
       map.getCanvas().style.cursor = "";
-    });
-  }, [mapTracksReady]);
+      map.dragPan.enable();
+    }
+  }, [mapTracksReady, mapPickActive]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -311,7 +369,7 @@ export function SituationalMap({
       activePopupRef,
       onPinnedCoordUpdateRef
     );
-  }, [visiblePoints, selectedTrackId, highlightedFactIds, simElapsedMs, layerMode, mapTracksReady]);
+  }, [visiblePoints, selectedTrackId, highlightedFactIds, layerMode, mapTracksReady]);
 
   useEffect(() => {
     if (!focusFactId) return;
@@ -340,6 +398,13 @@ export function SituationalMap({
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!mapTracksReady || !map?.getSource("action-preview")) return;
+    const source = map.getSource("action-preview") as maplibregl.GeoJSONSource;
+    source.setData(actionPreview ?? { type: "FeatureCollection", features: [] });
+  }, [actionPreview, mapTracksReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map || !map.getLayer("zone-blue-fill")) return;
     applyLayerVisibility(map, layerMode);
   }, [layerMode]);
@@ -360,7 +425,7 @@ export function SituationalMap({
         ? "Large circles: mission surveillance / exclusion / patrol areas (not individual sensors)."
         : layerMode === "threats"
           ? "Showing threat-class contacts only."
-          : "Blue = friendly sensor. Red = threat (dashed ring when in sensor coverage). Green = other track.";
+          : "Blue = sensor. Red = threat (Target). Grey = unknown contact (Actor). Green = objective or friendly unit.";
 
   return (
     <div className={styles.wrapper}>
@@ -422,7 +487,11 @@ export function SituationalMap({
           <i className={`${styles.legendDot} ${styles["marker-sensor"]}`} /> Sensor / SIGINT
         </span>
         <span>
-          <i className={`${styles.legendDot} ${styles["marker-friendly"]}`} /> Other contact
+          <i className={`${styles.legendDot} ${styles["marker-unknown"]}`} /> Unknown contact
+          (Actor)
+        </span>
+        <span>
+          <i className={`${styles.legendDot} ${styles["marker-friendly"]}`} /> Objective / unit
         </span>
         <span>
           <i className={`${styles.legendDot} ${styles.legendSensorWire}`} /> Sensor footprint
@@ -458,7 +527,7 @@ type FactPoint = {
   title: string;
   subtitle: string;
   domain: string;
-  kind: "threat" | "sensor" | "friendly";
+  kind: "threat" | "sensor" | "friendly" | "unknown";
   factId: string;
   inSensorRange: boolean;
   detected: boolean;
@@ -466,23 +535,19 @@ type FactPoint = {
   moving: boolean;
   headingDeg: number;
   speedKts: number;
+  coordinateType?: "reported" | "derived" | "stub";
 };
 
 function buildFactPoints(
   facts: ObservedFact[],
-  simElapsedMs: number,
   sensors: SensorFootprint[]
 ): FactPoint[] {
   return facts.map((fact, index) => {
-    let coord = factToLngLat(fact, index);
-
+    const coord = clampLngLatToTheater(factToLngLat(fact, index));
     const kinematics = contactKinematics(fact.id);
     const baseCoord = coord;
-    coord = clampLngLatToTheater(
-      offsetCoordByMotion(baseCoord, kinematics, simElapsedMs)
-    );
 
-    const kind = classifyPoint(fact);
+    const kind = classifyMapDisplayKind(fact);
     const inSensorRange = kind === "sensor" || isWithinSensorRange(baseCoord, sensors);
     const sensor = inSensorRange && kind !== "sensor" ? nearestSensor(baseCoord, sensors) : undefined;
 
@@ -499,22 +564,9 @@ function buildFactPoints(
       moving: kinematics.moving,
       headingDeg: kinematics.headingDeg,
       speedKts: kinematics.speedKts,
+      coordinateType: fact.coordinateType,
     };
   });
-}
-
-function classifyPoint(fact: ObservedFact): "threat" | "sensor" | "friendly" {
-  if (isSensorEntityFact(fact)) return "sensor";
-  if (
-    fact.domain === "UAS" ||
-    fact.domain === "maritime" ||
-    fact.domain === "air" ||
-    fact.severity === "high" ||
-    fact.severity === "critical"
-  ) {
-    return "threat";
-  }
-  return "friendly";
 }
 
 function domainLabel(domain: string): string {
@@ -526,25 +578,7 @@ function domainLabel(domain: string): string {
   return domain;
 }
 
-const WARGAME_ICON_URLS = {
-  uav_drone: new URL("../../../wargame_icon_pack/svg/uav_drone.svg", import.meta.url).href,
-  fighter_jet: new URL("../../../wargame_icon_pack/svg/fighter_jet.svg", import.meta.url).href,
-  strike_aircraft: new URL("../../../wargame_icon_pack/svg/strike_aircraft.svg", import.meta.url).href,
-  surface_warship: new URL("../../../wargame_icon_pack/svg/surface_warship.svg", import.meta.url).href,
-  missile_boat: new URL("../../../wargame_icon_pack/svg/missile_boat.svg", import.meta.url).href,
-  submarine: new URL("../../../wargame_icon_pack/svg/submarine.svg", import.meta.url).href,
-  radar: new URL("../../../wargame_icon_pack/svg/radar.svg", import.meta.url).href,
-  passive_sensor: new URL("../../../wargame_icon_pack/svg/passive_sensor.svg", import.meta.url).href,
-  cyber_attack: new URL("../../../wargame_icon_pack/svg/cyber_attack.svg", import.meta.url).href,
-  command_node: new URL("../../../wargame_icon_pack/svg/command_node.svg", import.meta.url).href,
-  logistics_depot: new URL("../../../wargame_icon_pack/svg/logistics_depot.svg", import.meta.url).href,
-  satellite: new URL("../../../wargame_icon_pack/svg/satellite.svg", import.meta.url).href,
-  civilian_marker: new URL("../../../wargame_icon_pack/svg/civilian_marker.svg", import.meta.url).href,
-  missile_inbound: new URL("../../../wargame_icon_pack/svg/missile_inbound.svg", import.meta.url).href,
-  unknown_contact: new URL("../../../wargame_icon_pack/svg/unknown_contact.svg", import.meta.url).href,
-} as const;
-
-function iconKeyForPoint(point: FactPoint): keyof typeof WARGAME_ICON_URLS {
+function iconKeyForPoint(point: FactPoint): WargameIconKey {
   const title = point.title.toLowerCase();
   if (title.includes("submarine")) return "submarine";
   if (title.includes("missile")) return "missile_inbound";
@@ -600,9 +634,14 @@ function trackPopupHtml(point: FactPoint): string {
       ? `<div class="${styles.popupSubtitle}">Detected by ${escapeHtml(point.detectingSensorName ?? "sensor net")}</div>`
       : "";
   const coordLine = `<div class="${styles.popupCoord}">${escapeHtml(formatCoordLabel(point.coord))}</div>`;
+  const syntheticBadge =
+    point.coordinateType === "stub"
+      ? `<div class="${styles.popupSubtitle}">SYNTHETIC POSITION</div>`
+      : "";
   return `<div class="${styles.popupBody}">
     <div class="${styles.popupTitle}">${escapeHtml(point.title)}</div>
     <div class="${styles.popupSubtitle}">${escapeHtml(point.subtitle)}</div>
+    ${syntheticBadge}
     ${coordLine}
     ${motionLine}
     ${detectLine}
@@ -653,31 +692,6 @@ function syncPinnedTrackPopup(
   }
 
   popupRef.current.setLngLat(lngLat).setHTML(html);
-}
-
-let wargameIconsRegistered = false;
-
-function loadImageElement(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.crossOrigin = "anonymous";
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error(`Failed to load icon: ${url}`));
-    image.src = url;
-  });
-}
-
-async function registerWargameIcons(map: maplibregl.Map): Promise<void> {
-  if (wargameIconsRegistered) return;
-  await Promise.all(
-    Object.entries(WARGAME_ICON_URLS).map(async ([key, url]) => {
-      const imageId = `wg-${key}`;
-      if (map.hasImage(imageId)) return;
-      const image = await loadImageElement(url);
-      map.addImage(imageId, image, { pixelRatio: 2 });
-    })
-  );
-  wargameIconsRegistered = true;
 }
 
 function factPointFromFeature(feature: GeoJSON.Feature): FactPoint | undefined {
@@ -760,6 +774,76 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
   map.addSource("tracks-rings", {
     type: "geojson",
     data: { type: "FeatureCollection", features: [] },
+  });
+  map.addSource("action-preview", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] },
+  });
+
+  map.addLayer({
+    id: "action-preview-fill",
+    type: "fill",
+    source: "action-preview",
+    filter: ["==", ["geometry-type"], "Polygon"],
+    paint: {
+      "fill-color": [
+        "match",
+        ["get", "previewKind"],
+        "secure-ring",
+        "#22c55e",
+        "defend-ring",
+        "#60a5fa",
+        "screen-area",
+        "#a78bfa",
+        "observe-area",
+        "#38bdf8",
+        "suppress-area",
+        "#f97316",
+        "disrupt-area",
+        "#ef4444",
+        "#38bdf8",
+      ],
+      "fill-opacity": 0.16,
+    },
+  });
+  map.addLayer({
+    id: "action-preview-line",
+    type: "line",
+    source: "action-preview",
+    filter: ["==", ["geometry-type"], "LineString"],
+    paint: {
+      "line-color": [
+        "match",
+        ["get", "previewKind"],
+        "attack-line",
+        "#ef4444",
+        "movement",
+        "#22c55e",
+        "logistics-line",
+        "#fbbf24",
+        "#67e8f9",
+      ],
+      "line-width": 3,
+      "line-opacity": 0.9,
+      "line-dasharray": [
+        "case",
+        ["==", ["get", "dashed"], 1],
+        ["literal", [2, 2]],
+        ["literal", [1, 0]],
+      ],
+    },
+  });
+  map.addLayer({
+    id: "action-preview-point",
+    type: "circle",
+    source: "action-preview",
+    filter: ["==", ["geometry-type"], "Point"],
+    paint: {
+      "circle-radius": 8,
+      "circle-color": "#fbbf24",
+      "circle-stroke-color": "#ffffff",
+      "circle-stroke-width": 2,
+    },
   });
 
   map.addLayer({
@@ -860,7 +944,14 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
     type: "circle",
     source: "tracks-points",
     paint: {
-      "circle-radius": ["case", ["boolean", ["get", "selected"], false], 14, 12],
+      "circle-radius": [
+        "case",
+        ["==", ["get", "logisticsLinked"], 1],
+        20,
+        ["boolean", ["get", "selected"], false],
+        16,
+        12,
+      ],
       "circle-color": [
         "match",
         ["get", "kind"],
@@ -868,19 +959,41 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
         "rgba(127, 29, 29, 0.85)",
         "sensor",
         "rgba(30, 58, 138, 0.85)",
+        "unknown",
+        "rgba(55, 65, 81, 0.9)",
         "rgba(20, 83, 45, 0.85)",
       ],
       "circle-stroke-color": [
-        "match",
-        ["get", "kind"],
-        "threat",
-        "#f87171",
-        "sensor",
-        "#67b6ff",
-        "#5fd68b",
+        "case",
+        ["==", ["get", "logisticsLinked"], 1],
+        "#fbbf24",
+        ["match",
+          ["get", "kind"],
+          "threat",
+          "#f87171",
+          "sensor",
+          "#67b6ff",
+          "unknown",
+          "#9ca3af",
+          "#5fd68b",
+        ],
       ],
-      "circle-stroke-width": 2,
-      "circle-opacity": ["case", ["boolean", ["get", "dimmed"], false], 0.4, 0.92],
+      "circle-stroke-width": [
+        "case",
+        ["==", ["get", "logisticsLinked"], 1],
+        3.5,
+        ["boolean", ["get", "selected"], false],
+        3,
+        2,
+      ],
+      "circle-opacity": [
+        "case",
+        ["==", ["get", "logisticsLinked"], 1],
+        1,
+        ["boolean", ["get", "dimmed"], false],
+        0.4,
+        0.92,
+      ],
     },
   });
 
@@ -895,9 +1008,9 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
       "icon-size": [
         "case",
         ["==", ["get", "logisticsLinked"], 1],
-        0.56,
+        0.66,
         ["boolean", ["get", "selected"], false],
-        0.5,
+        0.56,
         0.44,
       ],
       "icon-allow-overlap": true,

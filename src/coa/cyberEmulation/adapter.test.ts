@@ -13,7 +13,7 @@ describe("runCyberEmulationAdapter", () => {
     });
 
     expect(result.provider).toBe("simulated");
-    expect(result.executionMode).toBe("simulated");
+    expect(result.executionMode).toBe("simulation");
     expect(result.citedFactIds).toContain("fact_cyber_001");
     expect(result.validatedActionIds).toContain("ia_cyber");
     expect(result.techniquesEvaluated.length).toBeGreaterThan(0);
@@ -35,7 +35,7 @@ describe("runCyberEmulationAdapter", () => {
     });
 
     expect(result.provider).toBe("atomic-red-team");
-    expect(result.executionMode).toBe("lab-executed");
+    expect(result.executionMode).toBe("in-process-simulation");
   });
 
   it("rejects non-simulated runs without human approval", async () => {

@@ -53,11 +53,38 @@ export function resolveTheaterCoord(fact: ObservedFact, index: number): [number,
   return [stub[0] + offsetLng, stub[1] + offsetLat];
 }
 
-/** Fix swapped lat/lng and snap off-theater persisted coords into the Strait. */
+export type CoordinateType = "reported" | "derived" | "stub";
+
+export function resolveCoordinateType(
+  fact: ObservedFact,
+  index: number
+): CoordinateType {
+  if (fact.coordinates && isTaiwanTheaterCoord([fact.coordinates.lng, fact.coordinates.lat])) {
+    return "reported";
+  }
+  const text = `${fact.location ?? ""} ${fact.entity}`.toLowerCase();
+  if (
+    text.includes("keelung") ||
+    text.includes("taoyuan") ||
+    text.includes("northern") ||
+    text.includes("kaohsiung") ||
+    text.includes("southern") ||
+    text.includes("eastern") ||
+    text.includes("strait") ||
+    text.includes("shipping") ||
+    text.includes("taiwan") ||
+    text.includes("taipei")
+  ) {
+    return "derived";
+  }
+  void index;
+  return "stub";
+}
+
 export function normalizeFactCoordinates(
   fact: ObservedFact,
   index: number
-): { lat: number; lng: number } {
+): { lat: number; lng: number; coordinateType: CoordinateType } {
   if (fact.coordinates) {
     let { lat, lng } = fact.coordinates;
     if (lng >= 20 && lng <= 28 && lat >= 115 && lat <= 125) {
@@ -67,11 +94,11 @@ export function normalizeFactCoordinates(
       lng = swappedLng;
     }
     if (isTaiwanTheaterCoord([lng, lat])) {
-      return { lat, lng };
+      return { lat, lng, coordinateType: "reported" };
     }
   }
   const [lng, lat] = resolveTheaterCoord(fact, index);
-  return { lat, lng };
+  return { lat, lng, coordinateType: resolveCoordinateType(fact, index) };
 }
 
 export function factToLngLat(fact: ObservedFact, index: number): [number, number] {
@@ -92,10 +119,11 @@ export function clampLngLatToTheater([lng, lat]: [number, number]): [number, num
 
 export function normalizeFactsForTheater(facts: ObservedFact[]): ObservedFact[] {
   return facts.map((fact, index) => {
-    const { lat, lng } = normalizeFactCoordinates(fact, index);
+    const { lat, lng, coordinateType } = normalizeFactCoordinates(fact, index);
     return {
       ...fact,
       coordinates: { lat, lng },
+      coordinateType,
       location: fact.location ?? "Taiwan Strait theater",
     };
   });

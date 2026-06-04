@@ -7,6 +7,23 @@ export type SignalId = string;
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
 
+export type ScheduleAdjustment = {
+  actionId: string;
+  asset: string;
+  originalStartSec: number;
+  adjustedStartSec: number;
+  reason: string;
+};
+
+export type ScheduleBundleResult =
+  | { ok: true; actions: CoaAction[]; adjustments: ScheduleAdjustment[] }
+  | {
+      ok: false;
+      reason: string;
+      asset: string;
+      actionIds: string[];
+    };
+
 export type CoaAction = {
   id: ActionId;
   name: string;
@@ -32,6 +49,16 @@ export type Signal = {
 
 // ─── Logistics ───────────────────────────────────────────────────────────────
 
+export type LogisticsDependencyKind =
+  | "requires-completion"
+  | "uses-live-feed"
+  | "shares-evidence";
+
+export type TypedLogisticsDependency = {
+  chipId: string;
+  kind: LogisticsDependencyKind;
+};
+
 export type LogisticsChip = {
   id: string;
   actionId: ActionId;
@@ -43,6 +70,8 @@ export type LogisticsChip = {
   duration: number;
   /** IDs of chips this chip depends on */
   dependencies: string[];
+  /** Semantic type for each cross-lane dependency (same order as added entries). */
+  typedDependencies?: TypedLogisticsDependency[];
   /** Grounded facts supporting this logistics action (map + orders linkage). */
   citedFactIds?: string[];
   linkedFactIds?: string[];
@@ -51,6 +80,8 @@ export type LogisticsChip = {
   sceneEntities?: string[];
   sceneDomains?: string[];
   sceneSummary?: string;
+  /** When true, matrix shows a provisional card with timing required. */
+  timingUncertain?: boolean;
 };
 
 export type LogisticsLane = {
@@ -90,6 +121,8 @@ export type CyberEffectsAnnotation = {
   atomicTestsExecuted?: import("./cyberEmulation/types").AtomicTestExecution[];
 };
 
+export type EffectsEstimationMethod = "deterministic-heuristic";
+
 export type EffectsSummary = {
   expectedImpact: number;
   confidence: number;
@@ -97,6 +130,9 @@ export type EffectsSummary = {
   timeToEffect: number;
   explanation: string;
   risks: string[];
+  /** Prototype scoring method — not a validated operational prediction. */
+  estimationMethod: EffectsEstimationMethod;
+  isValidatedPrediction: false;
   /** Present when cyber-relevant actions were evaluated via the emulation adapter. */
   cyberEffects?: CyberEffectsAnnotation;
 };
@@ -200,10 +236,33 @@ export type RankingSensitivity = {
   }>;
 };
 
+export type CoaOrigin =
+  | "automated"
+  | "operator-authored"
+  | "operator-modified"
+  | "imported";
+
+export type CoaValidationStatus = "unvalidated" | "validated" | "stale";
+
+export type CoaCandidateStatus =
+  | "sat"
+  | "unsat"
+  | "error"
+  | "insufficient_evidence"
+  | "draft"
+  | "incomplete"
+  | "validating"
+  | "stale";
+
 export type CoaCandidate = {
   id: CoaId;
   runId: RunId;
-  status: "sat" | "unsat" | "error" | "insufficient_evidence";
+  /** Defaults to automated when omitted (legacy snapshots). */
+  origin?: CoaOrigin;
+  revisionId?: string;
+  parentCoaId?: CoaId;
+  validationStatus?: CoaValidationStatus;
+  status: CoaCandidateStatus;
   label: string;
   selectedActions: CoaAction[];
   /**
@@ -221,6 +280,41 @@ export type CoaCandidate = {
   dominatedBy?: CoaId;
   rankingExplanation?: RankingExplanation;
   scores: CoaScores;
+  validation?: CoaValidationRecord;
+  validatedOrderSet?: ValidatedOrderSet;
+  /** Set when validation fails — surfaced in UI and execute gate. */
+  validationBlockers?: string[];
+};
+
+export type CoaValidationRecord = {
+  validatedAt: string;
+  constraintsVersion: string;
+  scoringVersion: string;
+  evidenceSnapshotId: string;
+  blockers: string[];
+};
+
+export type ValidatedOrderSetTask = {
+  id: string;
+  actionId: string;
+  label: string;
+  startSec: number;
+  durationSec: number;
+  rowKey?: string;
+  actor?: string;
+  target?: string;
+  actionVerb?: string;
+  status: string;
+  origin: string;
+  dependencies: string[];
+  targetFactIds?: string[];
+  isManual: boolean;
+};
+
+export type ValidatedOrderSet = {
+  revisionId: string;
+  actionCount: number;
+  tasks: ValidatedOrderSetTask[];
 };
 
 // ─── Pipeline State ───────────────────────────────────────────────────────────
@@ -231,6 +325,45 @@ export type CoaCandidate = {
  * The matrix renders from:
  *   candidatesById[selectedCoaId].logisticsPlan
  */
+export type MatrixBarPatch = Partial<{
+  startSec: number;
+  durationSec: number;
+  status: import("./syncMatrix").SyncBarStatus;
+  rowKey: string;
+  actor: string;
+  target: string;
+  subLabel: string;
+  actionVerb: string;
+}>;
+
+export type MatrixOverlay = {
+  revisionId: string;
+  manualEntries: import("./manualSync").ManualSyncEntry[];
+  barPatches: Record<string, MatrixBarPatch>;
+  hiddenBarIds: string[];
+  modifiedBarIds: string[];
+};
+
+export type PreparedExecution = {
+  candidateId: CoaId;
+  revisionId: string;
+  preparedAt: string;
+  label: string;
+  origin: CoaOrigin;
+  orderSet: ValidatedOrderSet;
+  evidenceSnapshotId: string;
+};
+
+export type ExecutedCoaSnapshot = {
+  candidateId: CoaId;
+  revisionId: string;
+  label: string;
+  origin: CoaOrigin;
+  executedAt: string;
+  orderSet: ValidatedOrderSet;
+  evidenceSnapshotId: string;
+};
+
 export type CoaState = {
   activeRunId?: RunId;
   candidatesById: Record<CoaId, CoaCandidate>;
@@ -244,6 +377,12 @@ export type CoaState = {
   evidenceConflicts?: import("../intel/evidence").EvidenceConflict[];
   /** Whether top-ranked SAT COAs are fragile to scoring-weight changes. */
   rankingSensitivity?: RankingSensitivity;
+  /** Matrix edits keyed to a specific candidate revision — not UI-only overlays. */
+  matrixOverlaysByCoaId?: Record<CoaId, MatrixOverlay>;
+  /** Frozen revision approved for execution (must match current overlay revision). */
+  preparedExecution?: PreparedExecution;
+  /** Last committed execution snapshot. */
+  executedSnapshot?: ExecutedCoaSnapshot;
 };
 
 // ─── Solver I/O ──────────────────────────────────────────────────────────────

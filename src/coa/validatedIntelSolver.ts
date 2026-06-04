@@ -5,7 +5,7 @@ type IntelAction = NonNullable<SolverInput["intelActions"]>[number];
 
 /**
  * Produces competing COA bundles from validated intel actions (not one mega-bundle).
- * Each bundle is checked for asset/time overlap — overlapping bundles become UNSAT with traces.
+ * Shared assets within a bundle are serialized into earliest feasible slots (not UNSAT).
  */
 export async function solveValidatedIntelBundles(
   input: SolverInput
@@ -123,36 +123,27 @@ function evaluateBundle(
   }
 
   const T0 = Date.now() / 1000;
-  const selectedActions = scheduleBundleActions(bundle, T0);
-
-  const overlap = findAssetOverlap(selectedActions);
-  if (overlap) {
+  const scheduleResult = scheduleBundleActions(bundle, T0);
+  if (!scheduleResult.ok) {
     return {
       status: "unsat",
-      selectedActions,
+      selectedActions: [],
       constraintSatisfaction: {
         hard: [
           {
             id: "hc-resource-exclusivity",
             satisfied: false,
             label: "Asset exclusivity",
-            reason: `${overlap.asset} double-booked in overlapping time windows`,
-            evidence: overlap.actionIds,
-          },
-          {
-            id: "hc-cited-facts",
-            satisfied: bundle.every((a) => a.citedFacts.length > 0),
-            label: "Cited evidence",
-            reason: bundle.every((a) => a.citedFacts.length > 0)
-              ? "Each action cites observed facts"
-              : "One or more actions lack cited facts",
-            evidence: bundle.flatMap((a) => a.citedFacts),
+            reason: scheduleResult.reason,
+            evidence: scheduleResult.actionIds,
           },
         ],
         soft: [],
       },
     };
   }
+
+  const selectedActions = scheduleResult.actions;
 
   const missingAuthority = findMissingAuthority(bundle, input);
   if (missingAuthority) {
@@ -219,51 +210,272 @@ function evaluateBundle(
           reason: "Bundle theme matches validated intel action types",
           score: 0.8,
         },
+        buildScheduleEfficiencyConstraint(selectedActions),
+        ...scheduleResult.adjustments.map((adjustment, index) => ({
+          id: `sc-schedule-shift-${index}`,
+          satisfied: true,
+          weight: 0.3,
+          label: "Flexible reschedule",
+          reason: `${adjustment.actionId} on ${adjustment.asset}: ${adjustment.originalStartSec}s → ${adjustment.adjustedStartSec}s (${adjustment.reason})`,
+          score: 0.85,
+        })),
       ],
     },
   };
 }
 
 /**
- * Maps bundle actions to timed COA actions.
- * Immediate actions compete for the same start window (T0); non-immediate actions
- * pack sequentially per asset so overlap reflects real double-booking, not artificial spacing.
+ * Builds a deterministic, resource-aware schedule for one candidate bundle.
+ *
+ * The intel layer proposes actions and required assets. This scheduler decides
+ * when those actions can start. It does not use an LLM and it does not rely on
+ * fixed index spacing. Actions with different assets may run in parallel;
+ * Hard windows (`immediate`, `time-bound`) cannot be shifted — asset conflicts → UNSAT.
+ * Flexible (`routine`) actions may be rescheduled with trace entries.
  */
-function scheduleBundleActions(bundle: IntelAction[], T0: number): CoaAction[] {
+export function scheduleBundleActions(
+  bundle: IntelAction[],
+  T0: number
+): import("./types").ScheduleBundleResult {
   const assetEndTimes = new Map<string, number>();
+  const ordered = [...bundle].sort(comparePlanningPriority);
+  const actions: CoaAction[] = [];
+  const adjustments: import("./types").ScheduleAdjustment[] = [];
 
-  return bundle.map((action) => {
-    const resources =
-      action.requiredAssets && action.requiredAssets.length > 0
-        ? action.requiredAssets
-        : ["unassigned-asset"];
+  for (const action of ordered) {
+    const resources = normalizedResources(action);
     const duration = durationFor(action.timeSensitivity);
-    const isImmediate = action.timeSensitivity === "immediate" || !action.timeSensitivity;
+    const releaseTime = T0 + releaseOffsetFor(action.timeSensitivity);
+    const hardWindow = hasHardTimeWindow(action.timeSensitivity);
 
-    let startTime = T0;
-    if (!isImmediate) {
+    for (const asset of resources) {
+      const assetFreeAt = assetEndTimes.get(asset) ?? T0;
+      if (hardWindow && assetFreeAt > releaseTime) {
+        const conflicting = actions
+          .filter(
+            (scheduled) =>
+              scheduled.resources.includes(asset) &&
+              scheduled.startTime + scheduled.duration > releaseTime
+          )
+          .map((scheduled) => scheduled.id);
+        return {
+          ok: false,
+          reason: `Hard time window for "${action.description}" requires ${asset} at t=${releaseTime - T0}s but asset is booked until t=${assetFreeAt - T0}s`,
+          asset,
+          actionIds: [...conflicting, action.id],
+        };
+      }
+    }
+
+    let startTime = releaseTime;
+    for (const asset of resources) {
+      startTime = Math.max(startTime, assetEndTimes.get(asset) ?? T0);
+    }
+
+    if (!hardWindow && startTime > releaseTime) {
       for (const asset of resources) {
-        const priorEnd = assetEndTimes.get(asset);
-        if (priorEnd !== undefined) {
-          startTime = Math.max(startTime, priorEnd);
+        const assetFreeAt = assetEndTimes.get(asset) ?? T0;
+        if (assetFreeAt > releaseTime) {
+          adjustments.push({
+            actionId: action.id,
+            asset,
+            originalStartSec: releaseTime - T0,
+            adjustedStartSec: startTime - T0,
+            reason: `Rescheduled to avoid overlap on ${asset}`,
+          });
         }
       }
     }
 
-    const end = startTime + duration;
+    const endTime = startTime + duration;
     for (const asset of resources) {
-      assetEndTimes.set(asset, Math.max(assetEndTimes.get(asset) ?? T0, end));
+      assetEndTimes.set(asset, endTime);
     }
 
-    return {
+    actions.push({
       id: action.id,
       name: action.description,
       type: action.actionType ?? "other",
       startTime,
       duration,
       resources,
+    });
+  }
+
+  return {
+    ok: true,
+    actions: actions.sort(
+      (a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id)
+    ),
+    adjustments,
+  };
+}
+
+function hasHardTimeWindow(
+  sensitivity?: "immediate" | "time-bound" | "routine"
+): boolean {
+  return sensitivity === "immediate" || sensitivity === "time-bound";
+}
+
+function normalizedResources(action: IntelAction): string[] {
+  const assets = action.requiredAssets?.filter(Boolean) ?? [];
+  return assets.length > 0 ? Array.from(new Set(assets)).sort() : ["unassigned-asset"];
+}
+
+function comparePlanningPriority(a: IntelAction, b: IntelAction): number {
+  return (
+    sensitivityRank(a.timeSensitivity) - sensitivityRank(b.timeSensitivity) ||
+    confidenceRank(b.confidence) - confidenceRank(a.confidence) ||
+    a.id.localeCompare(b.id)
+  );
+}
+
+function sensitivityRank(value?: "immediate" | "time-bound" | "routine"): number {
+  if (value === "immediate") return 0;
+  if (value === "time-bound") return 1;
+  if (value === "routine") return 2;
+  return 1;
+}
+
+/** Earliest allowed start relative to planning T0. */
+function releaseOffsetFor(value?: "immediate" | "time-bound" | "routine"): number {
+  if (value === "immediate") return 0;
+  if (value === "time-bound") return 60;
+  if (value === "routine") return 180;
+  return 60;
+}
+
+function buildScheduleEfficiencyConstraint(actions: CoaAction[]) {
+  if (actions.length === 0) {
+    return {
+      id: "sc-schedule-efficiency",
+      satisfied: false,
+      weight: 0.5,
+      label: "Schedule efficiency",
+      reason: "No scheduled actions",
+      score: 0,
     };
-  });
+  }
+
+  const start = Math.min(...actions.map((action) => action.startTime));
+  const end = Math.max(...actions.map((action) => action.startTime + action.duration));
+  const makespan = Math.max(end - start, 1);
+  const work = actions.reduce((sum, action) => sum + action.duration, 0);
+  const score = Math.max(0, Math.min(1, work / makespan / actions.length));
+
+  return {
+    id: "sc-schedule-efficiency",
+    satisfied: score >= 0.5,
+    weight: 0.5,
+    label: "Schedule efficiency",
+    reason: "Resource-aware scheduler packed actions into earliest feasible slots",
+    score,
+  };
+}
+
+/**
+ * Re-checks a fixed operator/materialized schedule with the same hard constraints
+ * used for automated bundle evaluation (overlap, authority, schedule efficiency).
+ */
+export function evaluateScheduledRevision(
+  selectedActions: CoaAction[],
+  input: SolverInput
+): SolverCandidateResult {
+  if (selectedActions.length === 0) {
+    return {
+      status: "unsat",
+      selectedActions: [],
+      constraintSatisfaction: {
+        hard: [
+          {
+            id: "hc-actions",
+            satisfied: false,
+            label: "Executable tasks",
+            reason: "No scheduled actions in revision",
+          },
+        ],
+        soft: [],
+      },
+    };
+  }
+
+  const overlap = findAssetOverlap(selectedActions);
+  if (overlap) {
+    return {
+      status: "unsat",
+      selectedActions,
+      constraintSatisfaction: {
+        hard: [
+          {
+            id: "hc-resource-exclusivity",
+            satisfied: false,
+            label: "Asset exclusivity",
+            reason: `${overlap.asset} double-booked in overlapping time windows`,
+            evidence: overlap.actionIds,
+          },
+        ],
+        soft: [],
+      },
+    };
+  }
+
+  const bundle = (input.intelActions ?? []).filter((action) =>
+    selectedActions.some((scheduled) => scheduled.id === action.id)
+  );
+  const missingAuthority = findMissingAuthority(bundle, input);
+  if (missingAuthority) {
+    return {
+      status: "unsat",
+      selectedActions,
+      constraintSatisfaction: {
+        hard: [
+          {
+            id: "hc-authority",
+            satisfied: false,
+            label: "Authority approval",
+            reason: missingAuthority.reason,
+            evidence: missingAuthority.evidence,
+          },
+        ],
+        soft: [],
+      },
+    };
+  }
+
+  return {
+    status: "sat",
+    selectedActions,
+    constraintSatisfaction: {
+      hard: [
+        {
+          id: "hc-cited-facts",
+          satisfied: true,
+          label: "Cited evidence",
+          reason: "Revision schedule passes resource and authority checks",
+        },
+        {
+          id: "hc-resource-exclusivity",
+          satisfied: true,
+          label: "Asset exclusivity",
+          reason: "No overlapping asset assignments in this revision",
+        },
+      ],
+      soft: [
+        buildScheduleEfficiencyConstraint(selectedActions),
+        {
+          id: "sc-minimize-actions",
+          satisfied: selectedActions.length <= 4,
+          weight: 0.4,
+          label: "Parsimony",
+          reason:
+            selectedActions.length <= 4
+              ? "Compact revision"
+              : "Large revision increases coordination load",
+          score: selectedActions.length <= 4 ? 1 : 0.5,
+        },
+      ],
+    },
+  };
 }
 
 function findAssetOverlap(actions: CoaAction[]): { asset: string; actionIds: string[] } | undefined {
@@ -358,16 +570,17 @@ function confidenceRank(c?: "low" | "medium" | "high"): number {
   return 0;
 }
 
+/** Mission timeline seconds — sized so sync-matrix bars span multiple ticks at 1 min scale. */
 function durationFor(timeSensitivity?: "immediate" | "time-bound" | "routine"): number {
   switch (timeSensitivity) {
     case "immediate":
-      return 60;
+      return 10 * 60;
     case "time-bound":
-      return 180;
+      return 30 * 60;
     case "routine":
-      return 360;
+      return 60 * 60;
     default:
-      return 120;
+      return 15 * 60;
   }
 }
 

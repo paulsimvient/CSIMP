@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
 import { CoaSelector } from "@components/CoaSelector";
 import { LogisticsMatrix } from "@components/LogisticsMatrix";
-import { RealtimeProofGame } from "@components/RealtimeProofGame";
-import { OpsHeader, OpsWorkspace } from "./components/ops/OpsWorkspace";
+import { EnvironmentBanner } from "./components/ops/EnvironmentBanner";
+import { OpsHeader } from "./components/ops/OpsHeader";
+import { RestartConfirmDialog } from "./components/ops/RestartConfirmDialog";
+import { OpsWorkspace } from "./components/ops/OpsWorkspace";
 import { OpsWindowsProvider } from "./components/ops/OpsWindowsContext";
 import type { MessageTrafficItem, OverviewTrack, ShowOrderItem } from "./components/ops/types";
-import { NonOpsViews } from "./components/views/NonOpsViews";
+
+const NonOpsViews = lazy(() =>
+  import("./components/views/NonOpsViews").then((module) => ({ default: module.NonOpsViews }))
+);
 import { contactKinematics } from "./scene/kinematics";
 import {
   collectSensorFootprints,
@@ -22,6 +27,7 @@ import {
   useRankedCandidates,
   useRunMetadata,
   useRunPipeline,
+  useCreateOperatorDraft,
   useSelectCoa,
   useSelectedCoa,
 } from "@coa/store";
@@ -237,7 +243,6 @@ function solverProgressFromStatus(
 export function App() {
   const [activeView, setActiveView] = useState<
     | "overview"
-    | "simulation"
     | "signals"
     | "actions"
     | "coas"
@@ -268,17 +273,11 @@ export function App() {
   const [overviewTrackSort, setOverviewTrackSort] = useState<
     "freshest" | "confidence"
   >("freshest");
-  const [simClockPaused, setSimClockPaused] = useState(false);
-  const [simClockScale, setSimClockScale] = useState(60);
-  const [simElapsedMs, setSimElapsedMs] = useState(0);
   const [contactLifecycleEvents, setContactLifecycleEvents] = useState<MessageTrafficItem[]>([]);
   const [reportFilter, setReportFilter] = useState<
     "all" | MessageTrafficItem["channel"]
   >("all");
   const [ackedReportIds, setAckedReportIds] = useState<string[]>([]);
-  const [simSessionKey, setSimSessionKey] = useState(0);
-  const simStartEpochRef = useRef(Date.now());
-  const simLastTickRef = useRef(performance.now());
   const previousTrackLifecycleRef = useRef<Record<string, string>>({});
   const previousOrderStatusRef = useRef<Record<string, ShowOrderItem["status"]>>({});
   const llmStatus = getLlmStatus();
@@ -304,6 +303,7 @@ export function App() {
   const runMetadata = useRunMetadata();
   const resetCoa = useResetCoa();
   const selectCoa = useSelectCoa();
+  const createOperatorDraft = useCreateOperatorDraft();
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFullRun = async () => {
@@ -328,23 +328,23 @@ export function App() {
       });
       return;
     }
-    if ((intelState.groundingResult?.blockingIssues ?? 0) > 0) {
-      setSolverBlockedReason({
-        code: "blocking-validation-issues",
-        detail: `Grounding reported ${intelState.groundingResult?.blockingIssues ?? 0} blocking issue(s); solver run was skipped.`,
-      });
-      return;
-    }
+
     const payload = buildSolverPayload(
       intelState.validatedActions,
       intelState.validatedDecisionPoints,
       intelState.scenarioPacket
     );
     if (payload.intelActions.length === 0) {
+      const blockingIssues = intelState.groundingResult?.blockingIssues ?? 0;
       setSolverBlockedReason({
-        code: "no-executable-explicit-options",
+        code:
+          blockingIssues > 0
+            ? "blocking-validation-issues"
+            : "no-executable-explicit-options",
         detail:
-          "No executable, explicitly grounded actions remained after gating; solver run was skipped.",
+          blockingIssues > 0
+            ? `Grounding reported ${blockingIssues} blocking issue(s); no executable grounded actions remained for the solver.`
+            : "No executable grounded actions remained after gating; solver run was skipped.",
       });
       return;
     }
@@ -357,17 +357,20 @@ export function App() {
     });
   };
 
+  const [restartConfirmOpen, setRestartConfirmOpen] = useState(false);
+
+  const requestRestartScenario = () => {
+    setRestartConfirmOpen(true);
+  };
+
   const handleResetStoredState = () => {
-    handleRestartScenario();
+    requestRestartScenario();
   };
 
   const handleRestartScenario = () => {
+    setRestartConfirmOpen(false);
     resetIntel();
     resetCoa();
-    setSimElapsedMs(0);
-    simStartEpochRef.current = Date.now();
-    simLastTickRef.current = performance.now();
-    setSimClockPaused(false);
     setContactLifecycleEvents([]);
     previousTrackLifecycleRef.current = {};
     previousOrderStatusRef.current = {};
@@ -377,7 +380,6 @@ export function App() {
     setSolverBlockedReason(undefined);
     setOverviewTrackFilter("all");
     setShowFixSteps(false);
-    setSimSessionKey((key) => key + 1);
     void refreshPersistenceStatus();
   };
 
@@ -443,13 +445,13 @@ export function App() {
   });
   const topActions = validatedActions.slice(0, 3);
   const mapFacts = useMemo(() => {
-    const source = prioritizedFacts.length > 0 ? prioritizedFacts : stubPortAFacts();
+    const usingScenario = prioritizedFacts.length === 0;
+    const source = usingScenario
+      ? stubPortAFacts().map((fact) => ({ ...fact, sourceType: "scenario-demo" as const }))
+      : prioritizedFacts.map((fact) => ({ ...fact, sourceType: "loaded-fact" as const }));
     return normalizeFactsForTheater(source);
   }, [prioritizedFacts]);
   const nowLabel = new Date().toLocaleString();
-  const simNowIso = new Date(simStartEpochRef.current + simElapsedMs).toISOString();
-  const simClockLabel = formatTimeCompression(simClockScale);
-  const simMissionDay = Math.floor(simElapsedMs / (24 * 60 * 60 * 1000)) + 1;
   const recommended = selectedCoa ?? candidates[0];
   const factDomains = Array.from(new Set(facts.map((fact) => fact.domain)));
   const phase = prioritizedFacts.some((f) => f.severity === "critical")
@@ -474,8 +476,6 @@ export function App() {
     : prioritizedFacts.some((f) => f.severity === "high")
       ? "CONTESTED"
       : "GUARDED";
-  const contextLabel =
-    activeView === "simulation" ? "Simulation Ops" : "Global Overview";
   const messageTraffic = useMemo(
     () => buildMessageTraffic(prioritizedFacts, topActions, groundingResult?.issues.length ?? 0),
     [prioritizedFacts, topActions, groundingResult?.issues.length]
@@ -489,6 +489,11 @@ export function App() {
         : a.stalenessMinutes - b.stalenessMinutes
     );
   }, [mapFacts, overviewTrackSort]);
+  /** Every map marker is pickable as a contact track (incl. out-of-sensor / grey unknown). */
+  const scenePickTracks = useMemo(
+    () => buildSceneContacts(mapFacts, 0, { includeAllFacts: true }),
+    [mapFacts]
+  );
   const filteredOverviewTracks = useMemo(() => {
     if (overviewTrackFilter === "all") return overviewTracks;
     return overviewTracks.filter((track) => track.side === overviewTrackFilter);
@@ -514,11 +519,9 @@ export function App() {
       buildShowOrders({
         topActions,
         selectedTrack: selectedOverviewTrack,
-        simClockPaused,
-        simElapsedMs,
         displayedPlan,
       }),
-    [topActions, selectedOverviewTrack, simClockPaused, simElapsedMs, displayedPlan]
+    [topActions, selectedOverviewTrack, displayedPlan]
   );
   const reportWindowItems = useMemo(
     () => [...contactLifecycleEvents, ...messageTraffic].slice(0, 14),
@@ -638,12 +641,22 @@ export function App() {
   const hiddenReviewIssueCount = Math.max(0, reviewIssueDetails.length - topReviewIssueDetails.length);
   const solverEligibleOptionKeys = validatedDecisionPoints.flatMap((dp) =>
     dp.options
-      .filter((option) => option.status === "executable" && option.grounding === "explicit")
+      .filter(
+        (option) =>
+          option.status === "executable" &&
+          (option.grounding === "explicit" || option.grounding === "inherited")
+      )
       .map((option) => `${dp.id}:${option.id}`)
   );
   const filteredOutForSolverOptionKeys = validatedDecisionPoints.flatMap((dp) =>
     dp.options
-      .filter((option) => !(option.status === "executable" && option.grounding === "explicit"))
+      .filter(
+        (option) =>
+          !(
+            option.status === "executable" &&
+            (option.grounding === "explicit" || option.grounding === "inherited")
+          )
+      )
       .map((option) => `${dp.id}:${option.id}`)
   );
   const interpreterPrompt = packet
@@ -684,23 +697,24 @@ export function App() {
   useEffect(() => {
     const nextLifecycle: Record<string, string> = {};
     const nextEvents: MessageTrafficItem[] = [];
-    const clock = formatClock(simNowIso);
+    const clock = formatClock(new Date().toISOString());
     for (const track of overviewTracks) {
       const lifecycle = inferOverviewLifecycle(track);
       nextLifecycle[track.id] = lifecycle;
       const previous = previousTrackLifecycleRef.current[track.id];
       if (!previous) {
         nextEvents.push({
-          id: `lifecycle-${track.id}-new-${simElapsedMs}`,
+          id: `lifecycle-${track.id}-new`,
           time: clock,
           kind: "track",
           channel: "contact",
           severity: "warn",
           text: `${track.callsign} NEW CONTACT (${track.classification})`,
+          factId: track.id,
         });
       } else if (previous !== lifecycle) {
         nextEvents.push({
-          id: `lifecycle-${track.id}-${previous}-${lifecycle}-${simElapsedMs}`,
+          id: `lifecycle-${track.id}-${previous}-${lifecycle}`,
           time: clock,
           kind: "track",
           channel: "contact",
@@ -711,28 +725,29 @@ export function App() {
                 ? "warn"
                 : "info",
           text: `${track.callsign} ${previous.toUpperCase()} -> ${lifecycle.toUpperCase()}`,
+          factId: track.id,
         });
       }
     }
     for (const [trackId, previous] of Object.entries(previousTrackLifecycleRef.current)) {
       if (nextLifecycle[trackId]) continue;
       nextEvents.push({
-        id: `lifecycle-${trackId}-lost-${simElapsedMs}`,
+        id: `lifecycle-${trackId}-lost`,
         time: clock,
         kind: "track",
         channel: "contact",
         severity: "alert",
         text: `${trackId} ${previous.toUpperCase()} -> LOST`,
+        factId: trackId,
       });
     }
     previousTrackLifecycleRef.current = nextLifecycle;
     if (nextEvents.length === 0) return;
     setContactLifecycleEvents((current) => [...nextEvents, ...current].slice(0, 24));
-  }, [overviewTracks, simElapsedMs, simNowIso]);
+  }, [overviewTracks]);
 
   useEffect(() => {
-    if (simClockPaused) return;
-    const clock = formatClock(simNowIso);
+    const clock = formatClock(new Date().toISOString());
     const nextEvents: MessageTrafficItem[] = [];
     for (const order of showOrders) {
       const previous = previousOrderStatusRef.current[order.id];
@@ -744,7 +759,7 @@ export function App() {
       previousOrderStatusRef.current[order.id] = order.status;
       if (order.status === "active" && previous === "queued") {
         nextEvents.push({
-          id: `order-exec-${order.id}-${simElapsedMs}`,
+          id: `order-exec-${order.id}`,
           time: clock,
           kind: "ops",
           channel: "orders",
@@ -754,7 +769,7 @@ export function App() {
       }
       if (order.status === "hold" && previous === "active") {
         nextEvents.push({
-          id: `order-hold-${order.id}-${simElapsedMs}`,
+          id: `order-hold-${order.id}`,
           time: clock,
           kind: "ops",
           channel: "orders",
@@ -765,30 +780,21 @@ export function App() {
     }
     if (nextEvents.length === 0) return;
     setContactLifecycleEvents((current) => [...nextEvents, ...current].slice(0, 24));
-  }, [showOrders, simClockPaused, simElapsedMs, simNowIso]);
+  }, [showOrders]);
 
-  useEffect(() => {
-    simLastTickRef.current = performance.now();
-    const interval = window.setInterval(() => {
-      const now = performance.now();
-      const wallDelta = now - simLastTickRef.current;
-      simLastTickRef.current = now;
-      if (simClockPaused) return;
-      setSimElapsedMs((prev) => prev + wallDelta * simClockScale);
-    }, 250);
-    return () => window.clearInterval(interval);
-  }, [simClockPaused, simClockScale]);
   const rejectedDecisionOptionCount =
     groundingResult?.issues.filter((issue) => issue.kind === "unsupported-decision-option")
       .length ?? 0;
   const degradedGroundingCount =
     groundingResult?.issues.filter((issue) => issue.kind === "degraded-grounding").length ??
     0;
-  const executableExplicitOptionCount = validatedDecisionPoints.reduce(
+  const executableGroundedOptionCount = validatedDecisionPoints.reduce(
     (sum, dp) =>
       sum +
       dp.options.filter(
-        (option) => option.status === "executable" && option.grounding === "explicit"
+        (option) =>
+          option.status === "executable" &&
+          (option.grounding === "explicit" || option.grounding === "inherited")
       ).length,
     0
   );
@@ -821,7 +827,7 @@ export function App() {
             !(candidates.length > 0 || coaStatus === "ready")) ||
           (groundingResult.blockingIssues === 0 &&
             groundingResult.validatedActionIds.length === 0 &&
-            executableExplicitOptionCount === 0 &&
+            executableGroundedOptionCount === 0 &&
             !(candidates.length > 0 || coaStatus === "ready"))
             ? {
                 code:
@@ -831,7 +837,7 @@ export function App() {
                 detail:
                   groundingResult.blockingIssues > 0
                     ? `Grounding reported ${groundingResult.blockingIssues} blocking issue(s); solver did not run.`
-                    : "No executable, explicitly grounded actions were available for solver input.",
+                    : "No executable grounded actions were available for solver input.",
               }
             : undefined),
         validatedActions: groundingResult.validatedActionIds.length,
@@ -870,16 +876,21 @@ export function App() {
       <OpsHeader
         activeView={activeView}
         setActiveView={setActiveView}
-        simNowIso={simNowIso}
-        simClockPaused={simClockPaused}
         threatLevel={threatLevel}
         confidenceLevel={confidenceLevel}
         phase={phase}
         summaryTime={summaryTime}
         environmentLabel={environmentLabel}
-        onToggleClockPaused={() => setSimClockPaused((paused) => !paused)}
-        onRestartSim={handleRestartScenario}
+        onRestartScenario={requestRestartScenario}
         onExportTrace={() => setActiveView("trace")}
+      />
+
+      <EnvironmentBanner
+        usingScenarioData={prioritizedFacts.length === 0}
+        groundedFactCount={prioritizedFacts.length}
+        blockingIssueCount={blockingIssues.length}
+        reviewIssueCount={reviewIssueDetails.length}
+        lastUpdated={summaryTime}
       />
 
       {runtimeStatus.status === "LLM_UNAVAILABLE" && (
@@ -928,9 +939,9 @@ export function App() {
 
       <main
         className={
-          activeView !== "overview" && activeView !== "simulation"
-            ? `${styles.main} ${styles.mainScroll}`
-            : styles.main
+          activeView === "overview"
+            ? `${styles.main} ${styles.mainOverview}`
+            : `${styles.main} ${styles.mainScroll}`
         }
       >
         {activeView === "overview" && (
@@ -943,51 +954,36 @@ export function App() {
             summaryText={summaryText}
             mapFacts={mapFacts}
             overviewTracks={overviewTracks}
+            scenePickTracks={scenePickTracks}
             selectedOverviewTrack={selectedOverviewTrack}
             setSelectedOverviewTrackId={setSelectedOverviewTrackId}
             reportWindowItems={reportWindowItems}
             showOrders={showOrders}
-            topActions={topActions}
+            topActions={validatedActions}
             candidates={candidates}
             selectedCoaId={selectedCoa?.id}
             onSelectCoa={selectCoa}
             onRunCoaEvaluation={() => void handleFullRun()}
+            onCreateOperatorCoa={() => createOperatorDraft()}
             coaRunning={isRunning}
-            simClockPaused={simClockPaused}
-            simClockScale={simClockScale}
-            simClockLabel={simClockLabel}
-            simElapsedMs={simElapsedMs}
-            onSetSimClockScale={setSimClockScale}
-            onToggleSimPause={() => setSimClockPaused((paused) => !paused)}
-            onRestartSim={handleRestartScenario}
             commanderIntent={packet?.commanderIntent}
             validatedDecisionPoints={validatedDecisionPoints}
             displayedPlan={displayedPlan}
             coaPipelineStatus={coaStatus}
+            generationBlockerDetail={
+              "solverBlockedReason" in runtimeStatus && runtimeStatus.solverBlockedReason
+                ? runtimeStatus.solverBlockedReason.detail
+                : undefined
+            }
+            generationError={coaError ?? intelError}
+            knownAssets={packet?.knownAssets}
+            usingScenarioData={prioritizedFacts.length === 0}
           />
         )}
 
-        {activeView === "simulation" && (
-          <div className={styles.simulationView}>
-            <RealtimeProofGame
-              key={simSessionKey}
-              overviewTrackContext={
-                selectedOverviewTrack
-                  ? {
-                      id: selectedOverviewTrack.id,
-                      callsign: selectedOverviewTrack.callsign,
-                      side: selectedOverviewTrack.side,
-                      classification: selectedOverviewTrack.classification,
-                      confidence: selectedOverviewTrack.confidence,
-                      stalenessState: selectedOverviewTrack.stalenessState,
-                    }
-                  : undefined
-              }
-            />
-          </div>
-        )}
-
-        <NonOpsViews
+        {activeView !== "overview" ? (
+          <Suspense fallback={<div className={styles.viewLoading}>Loading view…</div>}>
+            <NonOpsViews
           activeView={activeView}
           onRefreshSignals={() => void handleFullRun()}
           onOpenTrace={() => setActiveView("trace")}
@@ -1034,9 +1030,17 @@ export function App() {
           commanderIntent={packet?.commanderIntent}
           coaRunMetadata={runMetadata}
           onRunLabCoaValidation={(options) => void handleLabCoaValidation(options)}
-        />
+            />
+          </Suspense>
+        ) : null}
       </main>
 
+      {restartConfirmOpen ? (
+        <RestartConfirmDialog
+          onConfirm={handleRestartScenario}
+          onCancel={() => setRestartConfirmOpen(false)}
+        />
+      ) : null}
     </div>
     </OpsWindowsProvider>
   );
@@ -1064,7 +1068,7 @@ function buildSolverPayload(
   const optionActions = validatedDecisionPoints.flatMap((dp) =>
     dp.options
       .filter((option) => option.status === "executable")
-      .filter((option) => option.grounding === "explicit")
+      .filter((option) => option.grounding === "explicit" || option.grounding === "inherited")
       .map((option) => ({
         id: `${dp.id}:${option.id}`,
         description: option.label,
@@ -1235,10 +1239,6 @@ function describeSnapshotKey(key: string): string {
   return "Custom snapshot key.";
 }
 
-function formatTimeCompression(scale: number): string {
-  return scale === 1 ? "1:1" : `1:${scale}`;
-}
-
 function formatClock(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "--:--";
@@ -1251,69 +1251,38 @@ function inferOverviewLifecycle(track: OverviewTrack): "new" | "tracking" | "los
   return "tracking";
 }
 
-const SIM_ORDER_GAP_MS = 3 * 60 * 1000;
-
 function buildShowOrders({
   topActions,
   selectedTrack,
-  simClockPaused,
-  simElapsedMs,
   displayedPlan,
 }: {
   topActions: ReturnType<typeof useValidatedActions>;
   selectedTrack: OverviewTrack | undefined;
-  simClockPaused: boolean;
-  simElapsedMs: number;
   displayedPlan: LogisticsPlan | { kind: "empty"; reason: string };
 }): ShowOrderItem[] {
-  const orderStatus = (
-    activateAtMs: number,
-    hold = false
-  ): ShowOrderItem["status"] => {
-    if (hold || simClockPaused) return "hold";
-    if (simElapsedMs >= activateAtMs) return "active";
-    return "queued";
-  };
-
   const selectedTrackOrder: ShowOrderItem | null = selectedTrack
     ? {
         id: `order-track-${selectedTrack.id}`,
         factId: selectedTrack.id,
         order: `Maintain ${selectedTrack.callsign} track quality (${selectedTrack.stalenessState}).`,
-        status: orderStatus(0, selectedTrack.stalenessState === "stale"),
+        status: selectedTrack.stalenessState === "stale" ? "hold" : "active",
         eta: selectedTrack.stalenessState === "stale" ? "Reacquire" : "<2m",
       }
     : null;
 
-  const actionOrders = topActions.slice(0, 3).map((action, index) => {
-    const activateAtMs = index * SIM_ORDER_GAP_MS;
-    const status = orderStatus(activateAtMs);
-    return {
-      id: `order-action-${action.id}`,
-      factId: action.citedFacts[0],
-      order: action.description,
-      status,
-      eta:
-        status === "active"
-          ? "Executing"
-          : status === "hold"
-            ? "Hold"
-            : `T+${Math.ceil((activateAtMs - simElapsedMs) / 60_000)}m`,
-    };
-  });
+  const actionOrders = topActions.slice(0, 3).map((action, index) => ({
+    id: `order-action-${action.id}`,
+    factId: action.citedFacts[0],
+    order: action.description,
+    status: (index === 0 ? "active" : "queued") as ShowOrderItem["status"],
+    eta: index === 0 ? "Executing" : "Queued",
+  }));
 
   const logisticsOrders: ShowOrderItem[] =
     displayedPlan.kind === "populated"
       ? displayedPlan.chips.slice(0, 4).map((chip) => {
-          const activateAtMs = chip.startOffset * 1000;
-          const endAtMs = activateAtMs + chip.duration * 1000;
-          const status: ShowOrderItem["status"] = simClockPaused
-            ? "hold"
-            : simElapsedMs >= endAtMs
-              ? "hold"
-              : simElapsedMs >= activateAtMs
-                ? "active"
-                : "queued";
+          const status: ShowOrderItem["status"] =
+            chip.startOffset === 0 ? "active" : "queued";
           return {
             id: `order-log-${chip.id}`,
             factId: chip.linkedFactIds?.[0],
@@ -1323,23 +1292,13 @@ function buildShowOrders({
             status,
             eta:
               status === "active"
-                ? `T+${Math.max(0, Math.ceil((endAtMs - simElapsedMs) / 1000))}s`
-                : status === "queued"
-                  ? `T+${Math.ceil(activateAtMs / 1000)}s`
-                  : "Complete",
+                ? `H+${Math.ceil(chip.startOffset / 60)}`
+                : `H+${Math.ceil(chip.startOffset / 60)}`,
           };
         })
       : [];
 
-  const clockOrder: ShowOrderItem = {
-    id: "order-clock",
-    order: `Mission clock ${simClockPaused ? "paused" : "running"} — advance orders on sim time.`,
-    status: simClockPaused ? "hold" : "active",
-    eta: simClockPaused ? "Await resume" : "Continuous",
-  };
-
   return [
-    clockOrder,
     ...(selectedTrackOrder ? [selectedTrackOrder] : []),
     ...actionOrders,
     ...logisticsOrders,
@@ -1363,6 +1322,7 @@ function buildMessageTraffic(
           ? ("warn" as const)
           : ("info" as const),
     text: `${fact.domain} · ${fact.event}`,
+    factId: fact.id,
   }));
   const actionMessages = topActions.slice(0, 2).map((action) => ({
     id: `action-${action.id}`,
@@ -1371,6 +1331,7 @@ function buildMessageTraffic(
     channel: "orders" as const,
     severity: action.confidence === "high" ? ("warn" as const) : ("info" as const),
     text: action.description,
+    factId: action.citedFacts?.[0],
   }));
   const validationMessage =
     validationIssueCount > 0

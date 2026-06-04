@@ -4,6 +4,7 @@ import type {
   LogisticsLane,
   LogisticsPlan,
 } from "@coa/types";
+import { buildChipAssessments, type ChipAssessment } from "../../coa/matrixQuality";
 import styles from "./LogisticsMatrix.module.css";
 
 export type LogisticsEmptyContext = {
@@ -11,11 +12,14 @@ export type LogisticsEmptyContext = {
   selectedCoaLabel?: string;
   selectedCoaStatus?: CoaCandidate["status"];
   satCount?: number;
+  blockedDetail?: string;
+  generationError?: string;
 };
 
 type LogisticsMatrixProps = {
   plan: LogisticsPlan | { kind: "empty"; reason: string };
   allowDemo?: boolean;
+  provisional?: boolean;
   selectedChipId?: string;
   onChipSelect?: (chip: LogisticsChip) => void;
   emptyContext?: LogisticsEmptyContext;
@@ -24,6 +28,7 @@ type LogisticsMatrixProps = {
 export function LogisticsMatrix({
   plan,
   allowDemo = false,
+  provisional = false,
   selectedChipId,
   onChipSelect,
   emptyContext,
@@ -45,9 +50,39 @@ export function LogisticsMatrix({
   const linkedChipCount = plan.chips.filter(
     (c) => (c.linkedFactIds?.length ?? 0) > 0
   ).length;
+  const chipAssessments = buildChipAssessments(plan, emptyContext, provisional);
+  const qualityCounts = {
+    red: Array.from(chipAssessments.values()).filter((item) => item.level === "red").length,
+    yellow: Array.from(chipAssessments.values()).filter((item) => item.level === "yellow")
+      .length,
+    green: Array.from(chipAssessments.values()).filter((item) => item.level === "green").length,
+  };
+  const hasQualityIssues = qualityCounts.red > 0 || qualityCounts.yellow > 0;
 
   return (
     <div className={styles.matrix}>
+      {(provisional || hasQualityIssues) && (
+        <div
+          className={
+            provisional ? styles.provisionalBanner : styles.qualityBanner
+          }
+        >
+          <strong>
+            {provisional
+              ? "Provisional Matrix (Not Executable)"
+              : "Plan Quality Review"}
+          </strong>
+          <span>
+            {provisional
+              ? "Fix red/yellow issues below, then regenerate COAs."
+              : "Red/yellow chips need attention before execution."}
+          </span>
+          <span className={styles.provisionalCounts}>
+            {qualityCounts.red} red · {qualityCounts.yellow} yellow ·{" "}
+            {qualityCounts.green} green
+          </span>
+        </div>
+      )}
       <div className={styles.header}>
         <TimeAxis totalDuration={totalDuration} />
       </div>
@@ -60,8 +95,14 @@ export function LogisticsMatrix({
             totalDuration={totalDuration}
             selectedChipId={selectedChipId}
             onChipSelect={onChipSelect}
+            chipAssessments={chipAssessments}
           />
         ))}
+      </div>
+      <div className={styles.provisionalLegend}>
+        <span className={`${styles.legendPill} ${styles.legendRed}`}>Red = blocked</span>
+        <span className={`${styles.legendPill} ${styles.legendYellow}`}>Yellow = review/fix</span>
+        <span className={`${styles.legendPill} ${styles.legendGreen}`}>Green = acceptable</span>
       </div>
       <div className={styles.footer}>
         <span className={styles.chipCount}>
@@ -82,12 +123,14 @@ function Lane({
   totalDuration,
   selectedChipId,
   onChipSelect,
+  chipAssessments,
 }: {
   lane: LogisticsLane;
   chipById: Map<string, LogisticsChip>;
   totalDuration: number;
   selectedChipId?: string;
   onChipSelect?: (chip: LogisticsChip) => void;
+  chipAssessments: Map<string, ChipAssessment>;
 }) {
   return (
     <div className={styles.lane}>
@@ -105,6 +148,7 @@ function Lane({
               totalDuration={totalDuration}
               selected={chip.id === selectedChipId}
               onSelect={onChipSelect}
+              assessment={chipAssessments.get(chip.id)}
             />
           );
         })}
@@ -118,15 +162,23 @@ function Chip({
   totalDuration,
   selected,
   onSelect,
+  assessment,
 }: {
   chip: LogisticsChip;
   totalDuration: number;
   selected: boolean;
   onSelect?: (chip: LogisticsChip) => void;
+  assessment?: ChipAssessment;
 }) {
   const left = (chip.startOffset / totalDuration) * 100;
   const width = Math.max((chip.duration / totalDuration) * 100, 4);
   const hasSceneLink = (chip.linkedFactIds?.length ?? 0) > 0;
+  const qualityClass =
+    assessment?.level === "red"
+      ? styles.chipRed
+      : assessment?.level === "yellow"
+        ? styles.chipYellow
+        : styles.chipGreen;
   const title = [
     chip.label,
     chip.actionType ? `Type: ${chip.actionType}` : "",
@@ -138,6 +190,9 @@ function Chip({
     chip.dependencies.length > 0
       ? `Depends on: ${chip.dependencies.length} chip(s)`
       : "",
+    assessment?.reasons.length ? `Status: ${assessment.level.toUpperCase()}` : "",
+    ...assessment?.reasons.map((reason) => `Issue: ${reason}`) ?? [],
+    ...assessment?.fixes.map((fix) => `Fix: ${fix}`) ?? [],
   ]
     .filter(Boolean)
     .join("\n");
@@ -147,10 +202,8 @@ function Chip({
       type="button"
       className={
         selected
-          ? `${styles.chip} ${styles.chipSelected}`
-          : hasSceneLink
-            ? `${styles.chip} ${styles.chipLinked}`
-            : styles.chip
+          ? `${styles.chip} ${qualityClass} ${styles.chipSelected}`
+          : `${styles.chip} ${qualityClass}`
       }
       style={{ left: `${left}%`, width: `${width}%` }}
       title={title}
@@ -233,11 +286,19 @@ function EmptyState({
   context?: LogisticsEmptyContext;
 }) {
   const { title, detail } = emptyMessage(reason, context);
+  const fixes = suggestFixes(context);
   return (
     <div className={styles.empty}>
       <div className={styles.emptyIcon}>—</div>
       <div className={styles.emptyMessage}>{title}</div>
       {detail && <p className={styles.emptyDetail}>{detail}</p>}
+      {fixes.length > 0 && (
+        <ul className={styles.emptyFixes}>
+          {fixes.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -248,4 +309,18 @@ function formatDuration(seconds: number): string {
   if (h > 0) return `${h}h${m > 0 ? `${m}m` : ""}`;
   if (m > 0) return `${m}m`;
   return `${Math.round(seconds)}s`;
+}
+
+function suggestFixes(context?: LogisticsEmptyContext): string[] {
+  const fixes: string[] = [];
+  if (!context) return fixes;
+  if (context.blockedDetail) fixes.push(context.blockedDetail);
+  if (context.generationError) fixes.push(context.generationError);
+  if (context.selectedCoaStatus === "unsat") {
+    fixes.push("Choose a SAT COA or adjust constraints to remove hard conflicts.");
+  }
+  if (context.pipelineStatus === "idle") {
+    fixes.push("Run COA generation after intel validation finishes.");
+  }
+  return fixes.slice(0, 3);
 }

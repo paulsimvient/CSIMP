@@ -39,6 +39,10 @@ export type ObservedFact = {
   severity: SeverityLevel;
   /** Pointer to raw evidence (sensor log, report ID, etc.) — not transmitted to LLM */
   rawEvidenceRef?: string;
+  /** Whether this fact was loaded from intelligence or bundled scenario demo data. */
+  sourceType?: "loaded-fact" | "scenario-demo";
+  /** How map coordinates were resolved for visualization. */
+  coordinateType?: "reported" | "derived" | "stub";
 };
 
 // ─── Source Reports ───────────────────────────────────────────────────────────

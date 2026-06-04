@@ -1,15 +1,17 @@
 import type { ObservedFact } from "../intel/types";
-import { createLaneId } from "./ids";
+import { createChipId, createLaneId } from "./ids";
 import {
   buildLogisticsSceneContext,
   enrichLogisticsChip,
   enrichLogisticsLaneLabel,
   type IntelActionContext,
+  type LogisticsSceneContext,
 } from "./logisticsScene";
 import type {
   CoaAction,
   CoaId,
   LogisticsChip,
+  LogisticsDependencyKind,
   LogisticsLane,
   LogisticsPlan,
   PlanSource,
@@ -55,8 +57,13 @@ export function buildLogisticsPlan(
 
   const laneMap = new Map<string, { lane: LogisticsLane; chips: LogisticsChip[] }>();
 
-  for (const action of actions) {
-    const resources = action.resources.length > 0 ? action.resources : ["general-asset"];
+  const orderedActions = [...actions].sort(
+    (a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id)
+  );
+
+  for (const action of orderedActions) {
+    const resources =
+      action.resources.length > 0 ? action.resources : ["command-element"];
     for (const resource of resources) {
       const laneId = createLaneId(coaId, resource);
 
@@ -87,6 +94,9 @@ export function buildLogisticsPlan(
         startOffset: action.startTime - T0,
         duration: action.duration,
         dependencies: prevChipId ? [prevChipId] : [],
+        typedDependencies: prevChipId
+          ? [{ chipId: prevChipId, kind: "requires-completion" }]
+          : [],
       };
 
       const chip = enrichLogisticsChip(baseChip, action, scene);
@@ -106,23 +116,34 @@ export function buildLogisticsPlan(
     }
   }
 
-  const orderedActions = [...actions].sort((a, b) => a.startTime - b.startTime);
+  // Cross-lane evidence dependencies: later actions that cite overlapping facts
+  // depend on earlier chips that produced or collected those facts (may overlap in time).
   for (let i = 1; i < orderedActions.length; i++) {
-    const prev = orderedActions[i - 1]!;
     const curr = orderedActions[i]!;
-    const prevFacts = new Set(
-      chipsByAction.get(prev.id)?.flatMap((c) => c.linkedFactIds ?? []) ?? []
-    );
     const currChips = chipsByAction.get(curr.id) ?? [];
-    const prevChipIds =
-      chipsByAction.get(prev.id)?.map((c) => c.id) ?? [];
-    if (prevFacts.size === 0 || prevChipIds.length === 0) continue;
+    if (currChips.length === 0) continue;
 
-    for (const chip of currChips) {
-      const sharesFact = (chip.linkedFactIds ?? []).some((id) => prevFacts.has(id));
-      if (!sharesFact) continue;
-      const merged = new Set([...chip.dependencies, ...prevChipIds]);
-      chip.dependencies = Array.from(merged);
+    for (let j = 0; j < i; j++) {
+      const prev = orderedActions[j]!;
+      if (prev.startTime > curr.startTime) continue;
+
+      const prevChips = chipsByAction.get(prev.id) ?? [];
+      const prevFacts = new Set(prevChips.flatMap((chip) => chip.linkedFactIds ?? []));
+      if (prevFacts.size === 0 || prevChips.length === 0) continue;
+
+      for (const chip of currChips) {
+        const sharesFact = (chip.linkedFactIds ?? []).some((id) => prevFacts.has(id));
+        if (!sharesFact) continue;
+        const kind = inferCrossLaneDependencyKind(prev, curr, scene);
+        for (const prevChip of prevChips) {
+          if (chip.dependencies.includes(prevChip.id)) {
+            upsertTypedDependency(chip, prevChip.id, kind);
+            continue;
+          }
+          chip.dependencies.push(prevChip.id);
+          upsertTypedDependency(chip, prevChip.id, kind);
+        }
+      }
     }
   }
 
@@ -150,6 +171,47 @@ export function buildLogisticsPlan(
   return assertSafePlan(plan);
 }
 
+/** Deep-clone a populated plan for a forked COA id, preserving chip evidence metadata. */
+export function cloneLogisticsPlanForCoa(
+  plan: Extract<LogisticsPlan, { kind: "populated" }>,
+  coaId: CoaId
+): Extract<LogisticsPlan, { kind: "populated" }> {
+  const laneIdByOld = new Map<string, string>();
+  const lanes = plan.lanes.map((lane) => {
+    const resourceKey = lane.label.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "lane";
+    const nextId = createLaneId(coaId, resourceKey);
+    laneIdByOld.set(lane.id, nextId);
+    return { ...lane, id: nextId, chipIds: [] as string[] };
+  });
+
+  const chipIdByOld = new Map<string, string>();
+  const chips = plan.chips.map((chip) => {
+    const nextChipId = createChipId(coaId, chip.actionId);
+    chipIdByOld.set(chip.id, nextChipId);
+    return {
+      ...chip,
+      id: nextChipId,
+      laneId: laneIdByOld.get(chip.laneId) ?? chip.laneId,
+      dependencies: chip.dependencies.map((dep) => chipIdByOld.get(dep) ?? dep),
+    };
+  });
+
+  for (const chip of chips) {
+    chip.dependencies = chip.dependencies.map((dep) => chipIdByOld.get(dep) ?? dep);
+  }
+
+  for (const lane of lanes) {
+    lane.chipIds = chips.filter((chip) => chip.laneId === lane.id).map((chip) => chip.id);
+  }
+
+  return {
+    ...plan,
+    coaId,
+    lanes,
+    chips,
+  };
+}
+
 // ─── Score logistics quality ──────────────────────────────────────────────────
 
 /**
@@ -163,15 +225,20 @@ export function scoreLogisticsPlan(plan: LogisticsPlan): number {
 
   if (chips.length === 0) return 0;
 
-  const totalActionTime = chips.reduce((sum, c) => sum + c.duration, 0);
-  const density = totalActionTime / (totalDuration * lanes.length || 1);
+  const uniqueActions = new Map<string, LogisticsChip>();
+  for (const chip of chips) uniqueActions.set(chip.actionId, chip);
 
-  const parallelism = lanes.length / chips.length;
+  const totalActionTime = [...uniqueActions.values()].reduce(
+    (sum, chip) => sum + chip.duration,
+    0
+  );
+  const density = totalActionTime / (totalDuration * Math.max(lanes.length, 1));
+  const resourceCoverage = Math.min(1, lanes.length / Math.max(uniqueActions.size, 1));
 
   const overlapCount = countSameLaneTimeOverlaps(plan);
-  const overlapPenalty = Math.min(0.4, overlapCount * 0.2);
+  const overlapPenalty = Math.min(0.5, overlapCount * 0.25);
 
-  return clamp(density * 0.6 + parallelism * 0.4 - overlapPenalty, 0, 1);
+  return clamp(density * 0.65 + resourceCoverage * 0.35 - overlapPenalty, 0, 1);
 }
 
 /** Overlapping chips on the same resource lane indicate scheduling conflict. */
@@ -234,4 +301,43 @@ export function assertSafePlan(plan: LogisticsPlan): LogisticsPlan {
 
 function sanitizeForId(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function inferCrossLaneDependencyKind(
+  prevAction: CoaAction,
+  currAction: CoaAction,
+  scene: LogisticsSceneContext
+): LogisticsDependencyKind {
+  const prevIntel = scene.actionById.get(prevAction.id);
+  const prevEnd = prevAction.startTime + prevAction.duration;
+  const overlaps = currAction.startTime < prevEnd;
+
+  if (overlaps) {
+    const prevType = prevIntel?.actionType ?? prevAction.type;
+    if (prevType === "observe" || prevType === "monitor") {
+      return "uses-live-feed";
+    }
+    return "shares-evidence";
+  }
+
+  if (currAction.startTime >= prevEnd) {
+    return "requires-completion";
+  }
+
+  return "shares-evidence";
+}
+
+function upsertTypedDependency(
+  chip: LogisticsChip,
+  chipId: string,
+  kind: LogisticsDependencyKind
+): void {
+  const typed = chip.typedDependencies ?? [];
+  const existing = typed.find((entry) => entry.chipId === chipId);
+  if (existing) {
+    existing.kind = kind;
+    chip.typedDependencies = typed;
+    return;
+  }
+  chip.typedDependencies = [...typed, { chipId, kind }];
 }

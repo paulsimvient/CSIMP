@@ -82,7 +82,7 @@ export const simulatedCyberProvider: CyberEmulationProviderFn = async (
     validatedActionIds: request.validatedActionIds,
     citedFactIds: request.citedFactIds,
     provider: "simulated",
-    executionMode: "simulated",
+    executionMode: "simulation",
     residualRisk,
     confidence,
     techniquesEvaluated: techniques,

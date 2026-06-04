@@ -1,0 +1,192 @@
+.inspector {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-accent);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.inspectorSubtitle {
+  font-size: 11px;
+  color: #8fa8c3;
+  font-weight: 500;
+}
+
+.inspectorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-accent);
+  background: var(--bg-header);
+}
+
+.inspectorHeader strong {
+  font-size: 13px;
+  color: var(--text-header);
+}
+
+.inspectorTabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-accent);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.inspectorTab {
+  flex: 1;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-header-muted);
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.inspectorTab:hover {
+  color: var(--text-header);
+  border-color: var(--border-accent);
+}
+
+.inspectorTabActive {
+  color: var(--text-header);
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--border-accent);
+}
+
+.inspectorBody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px 12px;
+}
+
+.inspectorSecondaryBtn {
+  border: 1px solid var(--border-accent);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-header-muted);
+  font-size: 10px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.inspectorSecondaryBtn:hover {
+  color: var(--text-header);
+}
+
+.emptyState {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-header-muted);
+  font-size: 11px;
+}
+
+.emptyState strong {
+  color: var(--text-header);
+  font-size: 12px;
+}
+
+.emptyState p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.sceneDetail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sceneDetailHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sceneDetailHeader strong {
+  font-size: 13px;
+  color: var(--text-header);
+}
+
+.sceneDetailSubtitle {
+  margin: 4px 0 0;
+  color: var(--text-header-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.sceneDetailSection {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #7aa4cd;
+}
+
+.sceneDetailGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin: 0;
+}
+
+.sceneDetailWide {
+  grid-column: 1 / -1;
+}
+
+.sceneDetailGrid dt {
+  margin: 0;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-header-muted);
+}
+
+.sceneDetailGrid dd {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--text-header);
+  line-height: 1.35;
+}
+
+.sceneHistoryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sceneHistoryList li {
+  display: grid;
+  grid-template-columns: 52px 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 10px;
+  color: var(--text-header-muted);
+}
+
+.sceneHistoryList strong {
+  color: var(--text-header);
+  font-size: 11px;
+}
+
+.matrixPanelHost {
+  min-height: 0;
+}
+
+.matrixPanelHost :global(.manualAuthorPanel) {
+  border: none;
+  padding: 0;
+  background: transparent;
+}

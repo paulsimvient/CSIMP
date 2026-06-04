@@ -25,6 +25,8 @@ export type MessageTrafficItem = {
   channel: "contact" | "orders" | "validation";
   severity: "info" | "warn" | "alert";
   text: string;
+  /** Linked map/contact fact ID when available. */
+  factId?: string;
 };
 
 export type ShowOrderItem = {

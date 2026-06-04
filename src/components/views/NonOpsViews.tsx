@@ -11,7 +11,6 @@ import styles from "../../App.module.css";
 
 type ActiveView =
   | "overview"
-  | "simulation"
   | "signals"
   | "actions"
   | "coas"

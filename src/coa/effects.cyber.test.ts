@@ -21,7 +21,7 @@ describe("defaultEffectsEngine cyber adapter integration", () => {
 
     const effect = results["coa-cyber"];
     expect(effect).toBeDefined();
-    expect(effect?.summary.cyberEffects?.executionMode).toBe("simulated");
+    expect(effect?.summary.cyberEffects?.executionMode).toBe("simulation");
     expect(effect?.summary.cyberEffects?.provider).toBe("simulated");
     expect(effect?.summary.cyberEffects?.citedFactIds).toContain("fact_cyber_001");
     expect(effect?.summary.cyberEffects?.techniquesEvaluated.length).toBeGreaterThan(0);
@@ -49,7 +49,7 @@ describe("defaultEffectsEngine cyber adapter integration", () => {
     });
 
     const effect = results["coa-lab"];
-    expect(effect?.summary.cyberEffects?.executionMode).toBe("lab-executed");
+    expect(effect?.summary.cyberEffects?.executionMode).toBe("in-process-simulation");
     expect(effect?.summary.cyberEffects?.provider).toBe("atomic-red-team");
     expect(effect?.summary.cyberEffects?.atomicTestsExecuted?.length).toBeGreaterThan(0);
   });

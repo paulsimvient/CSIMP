@@ -128,12 +128,13 @@ async function callOpenAiCompatible(
   config: ReturnType<typeof getLlmConfig>,
   prompt: string
 ): Promise<string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
   const response = await fetch(config.openaiEndpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${config.apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       model: config.model,
       messages: [{ role: "user", content: prompt }],
@@ -144,9 +145,10 @@ async function callOpenAiCompatible(
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
+    const sanitized = detail.replace(/sk-[A-Za-z0-9_-]+/g, "[redacted]");
     throw new Error(
       `LLM request failed: ${response.status} ${response.statusText}` +
-        (detail ? `\n${detail}` : "")
+        (sanitized ? `\n${sanitized}` : "")
     );
   }
 

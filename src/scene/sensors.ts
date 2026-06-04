@@ -174,7 +174,7 @@ export function circleRing(
 
 export type TrackRingPoint = {
   coord: [number, number];
-  kind: "threat" | "sensor" | "friendly";
+  kind: "threat" | "sensor" | "friendly" | "unknown";
   detected: boolean;
   factId: string;
 };

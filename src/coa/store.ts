@@ -8,6 +8,25 @@ import {
 import { assertCoaState } from "./assertions";
 import { EMPTY_DISPLAYED_PLAN } from "./logisticsConstants";
 import {
+  createOperatorDraftCandidate,
+  createImportedOperatorDraft,
+  validateOperatorCoaWithPipeline,
+  executePreparedCoa,
+  prepareAndExecuteCoa,
+  forkOperatorModifiedCandidate,
+  normalizeCoaState,
+  preserveOperatorCoasOnPipeline,
+  prepareExecution,
+  setMatrixOverlay,
+  validateOperatorCoa,
+  discardOperatorCoa,
+  mergeOperatorRevisionIntoParent,
+  rebaseOperatorCoa,
+} from "./operatorCoaActions";
+import { needsMaterializedValidation } from "./materializeCoaRevision";
+import { emptyMatrixOverlay, getMatrixOverlay } from "./operatorCoa";
+import type { MatrixOverlay } from "./types";
+import {
   pickDefaultSelectedCoa,
   resolveDisplayedLogisticsPlan,
   runCoaPipeline,
@@ -19,10 +38,39 @@ import type { CoaCandidate, CoaId, CoaState, LogisticsPlan, PipelineInput } from
 
 // ─── Store shape ──────────────────────────────────────────────────────────────
 
+export type ValidateOperatorResult = {
+  ok: boolean;
+  blockers: string[];
+};
+
 type CoaStore = CoaState & {
   runPipeline: (input?: PipelineInput) => Promise<void>;
   selectCoa: (coaId: CoaId) => void;
   reset: () => void;
+  createOperatorDraft: () => CoaId | undefined;
+  createImportedOperatorDraft: (manualEntries?: import("./manualSync").ManualSyncEntry[]) => CoaId | undefined;
+  forkOperatorModified: (parentId: CoaId) => CoaId | undefined;
+  updateMatrixOverlay: (
+    coaId: CoaId,
+    updater: (prev: MatrixOverlay) => MatrixOverlay
+  ) => void;
+  validateOperatorCoaRevision: (
+    coaId: CoaId,
+    ctx?: import("./operatorPipelineRevalidation").OperatorPipelineContext
+  ) => Promise<ValidateOperatorResult>;
+  prepareCoaExecution: (
+    coaId: CoaId,
+    ctx?: import("./materializeCoaRevision").MaterializeRevisionContext
+  ) => void;
+  discardOperatorCoa: (coaId: CoaId) => void;
+  rebaseOperatorCoa: (operatorCoaId: CoaId, newParentId: CoaId) => void;
+  mergeOperatorIntoParent: (operatorCoaId: CoaId) => void;
+  executePreparedCoaRevision: () => boolean;
+  executeCoaRevision: (
+    coaId: CoaId,
+    ctx?: import("./materializeCoaRevision").MaterializeRevisionContext
+  ) => { ok: boolean; blockers: string[] };
+  clearPreparedExecution: () => void;
 };
 
 // ─── Initial state ────────────────────────────────────────────────────────────
@@ -31,13 +79,23 @@ const INITIAL_STATE: CoaState = {
   candidatesById: {},
   candidateOrder: [],
   status: "idle",
+  matrixOverlaysByCoaId: {},
 };
+
 const COA_SQL_KEY = "coa_state";
+const AUTO_HYDRATE_FROM_SQL = false;
 
 export { EMPTY_DISPLAYED_PLAN, EMPTY_LOGISTICS_NOT_BUILT } from "./logisticsConstants";
 
 /** Stable empty array — selectors must not allocate `[]` per subscription tick. */
 export const EMPTY_EVIDENCE_CONFLICTS: EvidenceConflict[] = [];
+
+function commitState(next: CoaState): void {
+  const normalized = normalizeCoaState(next);
+  assertCoaState(normalized);
+  useCoaStore.setState(normalized);
+  void persistCoaState(normalized);
+}
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
@@ -45,48 +103,170 @@ export const useCoaStore = create<CoaStore>()((set, get) => ({
   ...INITIAL_STATE,
 
   runPipeline: async (input: PipelineInput = { mode: "validated-intel" }) => {
+    const previous = normalizeCoaState(get());
     set({ status: "running" });
-    void persistCoaState({ ...get(), status: "running" });
+    void persistCoaState({ ...previous, status: "running" });
 
     try {
-      const nextState = await runCoaPipeline(input);
-      set(nextState);
-      void persistCoaState(nextState);
+      const generated = await runCoaPipeline(input);
+      const nextState = preserveOperatorCoasOnPipeline(previous, generated);
+      commitState(nextState);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      set({ status: "error", error: message });
-      void persistCoaState({
-        ...get(),
-        status: "error",
-        error: message,
-      });
+      const errorState = { ...get(), status: "error" as const, error: message };
+      set(errorState);
+      void persistCoaState(errorState);
     }
   },
 
   selectCoa: (coaId: CoaId) => {
-    const state = get();
+    const state = normalizeCoaState(get());
 
     if (!state.candidatesById[coaId]) {
       console.warn(`[COA store] selectCoa: unknown coaId "${coaId}"`);
       return;
     }
 
-    const next: CoaState = { ...state, selectedCoaId: coaId };
-    assertCoaState(next);
-    set({ selectedCoaId: coaId });
-    void persistCoaState(next);
+    commitState({ ...state, selectedCoaId: coaId, preparedExecution: undefined });
   },
 
   reset: () => {
     set(INITIAL_STATE);
     void deleteSqlSnapshot(COA_SQL_KEY);
   },
+
+  createOperatorDraft: () => {
+    const { draftId, state } = createOperatorDraftCandidate(normalizeCoaState(get()));
+    commitState(state);
+    return draftId;
+  },
+
+  createImportedOperatorDraft: (manualEntries) => {
+    const { draftId, state } = createImportedOperatorDraft(
+      normalizeCoaState(get()),
+      manualEntries ?? []
+    );
+    commitState(state);
+    return draftId;
+  },
+
+  forkOperatorModified: (parentId: CoaId) => {
+    const result = forkOperatorModifiedCandidate(normalizeCoaState(get()), parentId);
+    if (!result) return undefined;
+    commitState(result.state);
+    return result.forkId;
+  },
+
+  updateMatrixOverlay: (coaId, updater) => {
+    const state = setMatrixOverlay(normalizeCoaState(get()), coaId, updater);
+    commitState(state);
+  },
+
+  validateOperatorCoaRevision: async (coaId, ctx) => {
+    const state = normalizeCoaState(get());
+    const candidate = state.candidatesById[coaId];
+    if (!candidate) {
+      return { ok: false, blockers: ["No COA selected for validation"] };
+    }
+    if (!needsMaterializedValidation(candidate)) {
+      return {
+        ok: false,
+        blockers: ["Only operator or imported COA drafts can be validated"],
+      };
+    }
+
+    useCoaStore.setState({
+      candidatesById: {
+        ...state.candidatesById,
+        [coaId]: { ...candidate, status: "validating" },
+      },
+    });
+
+    try {
+      const next = await validateOperatorCoaWithPipeline(
+        normalizeCoaState(get()),
+        coaId,
+        ctx
+      );
+      commitState(next);
+      const updated = next.candidatesById[coaId];
+      if (
+        updated?.validationStatus === "validated" &&
+        updated.status === "sat" &&
+        !(updated.validationBlockers?.length)
+      ) {
+        return { ok: true, blockers: [] };
+      }
+      return {
+        ok: false,
+        blockers:
+          updated?.validationBlockers?.length
+            ? updated.validationBlockers
+            : ["Validation failed — review matrix tasks and try again"],
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const stuck = normalizeCoaState(get());
+      const current = stuck.candidatesById[coaId];
+      if (current?.status === "validating") {
+        commitState({
+          ...stuck,
+          candidatesById: {
+            ...stuck.candidatesById,
+            [coaId]: {
+              ...current,
+              status: "incomplete",
+              validationStatus: "unvalidated",
+              validationBlockers: [message],
+            },
+          },
+          preparedExecution: undefined,
+        });
+      }
+      return { ok: false, blockers: [message] };
+    }
+  },
+
+  prepareCoaExecution: (coaId, ctx) => {
+    commitState(prepareExecution(normalizeCoaState(get()), coaId, ctx));
+  },
+
+  discardOperatorCoa: (coaId) => {
+    commitState(discardOperatorCoa(normalizeCoaState(get()), coaId));
+  },
+
+  rebaseOperatorCoa: (operatorCoaId, newParentId) => {
+    commitState(rebaseOperatorCoa(normalizeCoaState(get()), operatorCoaId, newParentId));
+  },
+
+  mergeOperatorIntoParent: (operatorCoaId) => {
+    commitState(
+      mergeOperatorRevisionIntoParent(normalizeCoaState(get()), operatorCoaId)
+    );
+  },
+
+  executePreparedCoaRevision: () => {
+    const before = normalizeCoaState(get());
+    const after = executePreparedCoa(before);
+    if (after.executedSnapshot === before.executedSnapshot) return false;
+    commitState(after);
+    return true;
+  },
+
+  executeCoaRevision: (coaId, ctx) => {
+    const result = prepareAndExecuteCoa(normalizeCoaState(get()), coaId, ctx);
+    commitState(result.state);
+    return { ok: result.ok, blockers: result.blockers };
+  },
+
+  clearPreparedExecution: () => {
+    const state = normalizeCoaState(get());
+    if (!state.preparedExecution) return;
+    commitState({ ...state, preparedExecution: undefined });
+  },
 }));
 
 // ─── React hooks ─────────────────────────────────────────────────────────────
-//
-// Selectors that return arrays or freshly allocated objects MUST use useShallow
-// or return stable references. Otherwise React 18's useSyncExternalStore loops.
 
 export function useDisplayedPlan(): LogisticsPlan | typeof EMPTY_DISPLAYED_PLAN {
   return useCoaStore((s) => resolveDisplayedLogisticsPlan(s));
@@ -132,12 +312,76 @@ export function useRunMetadata() {
   return useCoaStore((s) => s.runMetadata);
 }
 
+export function useMatrixOverlayForSelected(): MatrixOverlay {
+  return useCoaStore(useShallow((s) => getMatrixOverlay(s, s.selectedCoaId)));
+}
+
+export function useMatrixOverlay(coaId: CoaId | undefined): MatrixOverlay {
+  return useCoaStore(useShallow((s) => getMatrixOverlay(s, coaId)));
+}
+
+export function usePreparedExecution() {
+  return useCoaStore((s) => s.preparedExecution);
+}
+
+export function useExecutedSnapshot() {
+  return useCoaStore((s) => s.executedSnapshot);
+}
+
+export function useCreateOperatorDraft() {
+  return useCoaStore((s) => s.createOperatorDraft);
+}
+
+export function useCreateImportedOperatorDraft() {
+  return useCoaStore((s) => s.createImportedOperatorDraft);
+}
+
+export function useForkOperatorModified() {
+  return useCoaStore((s) => s.forkOperatorModified);
+}
+
+export function useUpdateMatrixOverlay() {
+  return useCoaStore((s) => s.updateMatrixOverlay);
+}
+
+export function useValidateOperatorCoa() {
+  return useCoaStore((s) => s.validateOperatorCoaRevision);
+}
+
+export function useDiscardOperatorCoa() {
+  return useCoaStore((s) => s.discardOperatorCoa);
+}
+
+export function useRebaseOperatorCoa() {
+  return useCoaStore((s) => s.rebaseOperatorCoa);
+}
+
+export function useMergeOperatorIntoParent() {
+  return useCoaStore((s) => s.mergeOperatorIntoParent);
+}
+
+export function usePrepareCoaExecution() {
+  return useCoaStore((s) => s.prepareCoaExecution);
+}
+
+export function useExecutePreparedCoa() {
+  return useCoaStore((s) => s.executePreparedCoaRevision);
+}
+
+export function useExecuteCoaRevision() {
+  return useCoaStore((s) => s.executeCoaRevision);
+}
+
+export function useClearPreparedExecution() {
+  return useCoaStore((s) => s.clearPreparedExecution);
+}
+
 function sanitizeHydratedCoaState(state: CoaState): CoaState {
-  const merged: CoaState = {
+  const merged = normalizeCoaState({
     ...INITIAL_STATE,
     ...state,
     status: state.status === "running" ? "idle" : state.status,
-  };
+  });
 
   const ranked = selectRankedCandidates(merged);
   if (ranked.length === 0) return merged;
@@ -165,4 +409,17 @@ async function hydrateCoaState(): Promise<void> {
   useCoaStore.setState(sanitizeHydratedCoaState(snapshot));
 }
 
-void hydrateCoaState();
+if (AUTO_HYDRATE_FROM_SQL) {
+  void hydrateCoaState();
+}
+
+export { emptyMatrixOverlay, EMPTY_MATRIX_OVERLAY, getExecuteBlockers, getMatrixOverlay } from "./operatorCoa";
+export {
+  canSelectCandidate,
+  candidateBadgeLabel,
+  coaOrigin,
+  executionStatusMessage,
+  hasOverlayChanges,
+  isOperatorCandidate,
+  overlayDiffSummary,
+} from "./operatorCoa";

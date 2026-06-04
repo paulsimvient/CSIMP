@@ -1,4 +1,8 @@
 import type { CyberEffectsAnnotation } from "@coa/types";
+import {
+  cyberExecutionBadgeLabel,
+  normalizeCyberExecutionMode,
+} from "../../coa/cyberEmulation/executionMode";
 import styles from "../../App.module.css";
 
 type CyberEffectsBadgeProps = {
@@ -6,12 +10,33 @@ type CyberEffectsBadgeProps = {
   compact?: boolean;
 };
 
+function executionBadge(mode: CyberEffectsAnnotation["executionMode"]): {
+  className: string;
+  label: string;
+} {
+  const normalized = normalizeCyberExecutionMode(mode);
+  switch (normalized) {
+    case "simulation":
+      return { className: styles.cyberSimBadge ?? "", label: cyberExecutionBadgeLabel(normalized) };
+    case "lab-executed":
+      return { className: styles.cyberLabBadge ?? "", label: cyberExecutionBadgeLabel(normalized) };
+    case "in-process-simulation":
+      return {
+        className: styles.cyberInProcessBadge ?? "",
+        label: cyberExecutionBadgeLabel(normalized),
+      };
+    case "lab-unavailable":
+      return {
+        className: styles.cyberUnavailableBadge ?? "",
+        label: cyberExecutionBadgeLabel(normalized),
+      };
+  }
+}
+
 export function CyberEffectsBadge({ cyberEffects, compact }: CyberEffectsBadgeProps) {
   if (!cyberEffects) return null;
 
-  const isSimulated = cyberEffects.executionMode === "simulated";
-  const badgeClass = isSimulated ? styles.cyberSimBadge : styles.cyberLabBadge;
-  const label = isSimulated ? "SIMULATED" : "LAB EXECUTED";
+  const { className: badgeClass, label } = executionBadge(cyberEffects.executionMode);
   const techniques = cyberEffects.techniquesEvaluated
     .map((t) => t.techniqueId)
     .slice(0, compact ? 2 : 4)

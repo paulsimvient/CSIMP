@@ -38,6 +38,16 @@ export function assertCoaState(state: CoaState): void {
   for (const candidate of Object.values(state.candidatesById)) {
     const { id, status, selectedActions, logisticsPlan } = candidate;
 
+    const origin = candidate.origin ?? "automated";
+
+    if ((origin === "operator-authored" || origin === "imported") && status === "draft") {
+      continue;
+    }
+
+    if (origin === "operator-modified" && (status === "incomplete" || status === "stale")) {
+      continue;
+    }
+
     // A SAT COA with actions must have a populated logistics plan
     if (status === "sat" && selectedActions.length > 0) {
       if (logisticsPlan.kind !== "populated") {

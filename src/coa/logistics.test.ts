@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runCoaPipeline } from "./pipeline";
+import { buildLogisticsPlan } from "./logistics";
 
 describe("validated-intel logistics plan safety", () => {
   it("does not include demo offensive labels in validated-intel logistics plan", async () => {
@@ -54,5 +55,35 @@ describe("validated-intel logistics plan safety", () => {
     expect(selected?.logisticsPlan.kind).toBe("populated");
     if (!selected || selected.logisticsPlan.kind !== "populated") return;
     expect(selected.logisticsPlan.source).toBe("demo");
+  });
+});
+
+
+describe("buildLogisticsPlan evidence dependencies", () => {
+  it("links non-adjacent completed actions that share cited facts", () => {
+    const plan = buildLogisticsPlan({
+      coaId: "coa_test",
+      source: "validated-intel",
+      actions: [
+        { id: "a", name: "Observe route", type: "observe", startTime: 0, duration: 10, resources: ["asset-a"] },
+        { id: "b", name: "Coordinate team", type: "coordinate", startTime: 10, duration: 10, resources: ["asset-b"] },
+        { id: "c", name: "Preserve access", type: "preserve", startTime: 20, duration: 10, resources: ["asset-c"] },
+      ],
+      intelActions: [
+        { id: "a", description: "Observe route", citedFacts: ["fact-shared"] },
+        { id: "b", description: "Coordinate team", citedFacts: ["fact-other"] },
+        { id: "c", description: "Preserve access", citedFacts: ["fact-shared"] },
+      ],
+      observedFacts: [
+        { id: "fact-shared", domain: "logistics", entity: "Route", event: "Access degraded", time: "00:00", source: "test", confidence: "high", severity: "medium" },
+        { id: "fact-other", domain: "ground", entity: "Team", event: "Coordination required", time: "00:00", source: "test", confidence: "high", severity: "medium" },
+      ],
+    });
+
+    expect(plan.kind).toBe("populated");
+    if (plan.kind !== "populated") return;
+    const sourceChip = plan.chips.find((chip) => chip.actionId === "a")!;
+    const targetChip = plan.chips.find((chip) => chip.actionId === "c")!;
+    expect(targetChip.dependencies).toContain(sourceChip.id);
   });
 });

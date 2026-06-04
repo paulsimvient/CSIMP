@@ -76,5 +76,8 @@ describe("logistics scene linkage", () => {
     expect(fusionChip?.linkedFactIds).toContain("fact_cyber_001");
     expect(fusionChip?.sceneSummary).toMatch(/UAS|Auth/);
     expect((fusionChip?.dependencies.length ?? 0) > 0).toBe(true);
+    expect(
+      fusionChip?.typedDependencies?.some((dep) => dep.kind === "uses-live-feed")
+    ).toBe(true);
   });
 });

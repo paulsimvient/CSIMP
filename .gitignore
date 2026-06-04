@@ -8,3 +8,7 @@ __MACOSX/
 **/.DS_Store
 Archive.zip
 CODA2_HARP/
+*.tar.gz
+*.db
+*.sqlite
+local-exports/

@@ -65,6 +65,11 @@ export function enrichLogisticsChip(
           .join(" · ")
       : undefined;
 
+  const description = intel?.description ?? action.name;
+  const timingUncertain =
+    action.duration <= 0 ||
+    /\b(timing required|timing tbd|tbd timing|time tbd|schedule tbd)\b/i.test(description);
+
   return {
     ...chip,
     citedFactIds: [...citedFactIds],
@@ -74,6 +79,7 @@ export function enrichLogisticsChip(
     sceneEntities: [...sceneEntities],
     sceneDomains: [...sceneDomains],
     sceneSummary,
+    timingUncertain,
   };
 }
 

@@ -46,6 +46,8 @@ describe("runCoaPipeline intel fidelity scoring", () => {
               timeToEffect: 3600,
               explanation: "Deterministic test effects",
               risks: [],
+              estimationMethod: "deterministic-heuristic",
+              isValidatedPrediction: false,
             },
             score: 0.65,
             risk: 0.25,

@@ -55,6 +55,20 @@ state.candidatesById[state.selectedCoaId].logisticsPlan
 
 Use `useDisplayedPlan()` — it wraps the selector above. Do not maintain separate logistics state.
 
+### Operator revisions (not pipeline-generated)
+
+`runCoaPipeline()` still creates **automated** candidates only. Operator paths use the COA store:
+
+| Path | Created by | Validate | Execute |
+|------|------------|----------|---------|
+| Operator-authored | `createOperatorDraft()` | `validateOperatorCoa()` → `materializeCoaRevision()` | `prepareCoaExecution()` + `executePreparedCoaRevision()` |
+| Operator-modified | `forkOperatorModified()` / auto-fork on edit | `validateOperatorCoaWithPipeline()` | same; optional `mergeOperatorIntoParent()` after validate |
+| Imported | `createImportedOperatorDraft()` / **Import COA draft** UI | same pipeline validation | same |
+
+`validateOperatorCoaWithPipeline()` materializes the visible matrix, then runs constraint re-check (`evaluateScheduledRevision`), `defaultEffectsEngine`, and intel-fidelity scoring — the same steps automated COAs receive after the solver. `reorderCoaCandidates()` refreshes `candidateOrder` and `dominatedBy` for automated and operator COAs together.
+
+Overlays (`matrixOverlaysByCoaId`) are persisted in `coa_state`. Validation bakes the **visible matrix** into `selectedActions`, `logisticsPlan`, `validatedOrderSet`, and refreshed scores. Execution commits `executedSnapshot` with the frozen order set and `evidenceSnapshotId`.
+
 Rank explanations: `buildCoaRankRationale(candidate, rank)` in `rankRationale.ts`.
 
 ## Invariants (`assertCoaState`)

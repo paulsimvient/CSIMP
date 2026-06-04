@@ -9,8 +9,9 @@ html, body, #root {
 }
 
 body {
-  background: #09090f;
-  color: #e8eaf6;
+  background: var(--bg-root);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

@@ -5,27 +5,53 @@ export type LlmConfig = {
   model: string;
   /** Ollama base URL, e.g. http://localhost:11434 */
   ollamaBaseUrl: string;
-  /** Full URL for OpenAI-compatible chat completions */
+  /** OpenAI-compatible chat completions URL (local Ollama or server proxy). */
   openaiEndpoint: string;
-  apiKey: string;
+  /** True when remote calls must go through /api/llm (no browser API key). */
+  usesServerProxy: boolean;
 };
 
 const DEFAULT_OLLAMA_BASE = "http://localhost:11434";
 const DEFAULT_MODEL = "llama3.2";
+const LLM_PROXY_PATH = "/api/llm";
+
+function isLocalOllamaEndpoint(url: string): boolean {
+  try {
+    const parsed = new URL(url, "http://localhost");
+    return (
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1") &&
+      (parsed.port === "11434" || parsed.pathname.includes("11434"))
+    );
+  } catch {
+    return url.includes("11434");
+  }
+}
 
 export function getLlmConfig(): LlmConfig {
   const provider = resolveProvider();
+  const model = (import.meta.env.VITE_LLM_MODEL as string | undefined) ?? DEFAULT_MODEL;
+  const ollamaBaseUrl =
+    (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined) ?? DEFAULT_OLLAMA_BASE;
+  const configuredEndpoint =
+    (import.meta.env.VITE_LLM_ENDPOINT as string | undefined) ??
+    `${DEFAULT_OLLAMA_BASE}/v1/chat/completions`;
+
+  if (provider === "openai") {
+    return {
+      provider,
+      model,
+      ollamaBaseUrl,
+      openaiEndpoint: LLM_PROXY_PATH,
+      usesServerProxy: true,
+    };
+  }
 
   return {
     provider,
-    model: (import.meta.env.VITE_LLM_MODEL as string | undefined) ?? DEFAULT_MODEL,
-    ollamaBaseUrl:
-      (import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined) ??
-      DEFAULT_OLLAMA_BASE,
-    openaiEndpoint:
-      (import.meta.env.VITE_LLM_ENDPOINT as string | undefined) ??
-      `${DEFAULT_OLLAMA_BASE}/v1/chat/completions`,
-    apiKey: (import.meta.env.VITE_LLM_API_KEY as string | undefined) ?? "ollama",
+    model,
+    ollamaBaseUrl,
+    openaiEndpoint: configuredEndpoint,
+    usesServerProxy: false,
   };
 }
 
@@ -44,6 +70,13 @@ export function getLlmStatus(config: LlmConfig = getLlmConfig()): {
     };
   }
 
+  if (config.usesServerProxy) {
+    return {
+      label: `${config.provider}:${config.model} (server proxy)`,
+      mode: "live",
+    };
+  }
+
   return {
     label: `${config.provider}:${config.model}`,
     mode: "live",
@@ -57,15 +90,12 @@ function resolveProvider(): LlmProvider {
   if (explicit === "openai") return "openai";
   if (explicit === "ollama") return "ollama";
 
-  // Auto-detect: if an OpenAI endpoint is set without provider, use openai mode
   const endpoint = import.meta.env.VITE_LLM_ENDPOINT as string | undefined;
-  if (endpoint && !endpoint.includes("11434")) return "openai";
+  if (endpoint && !isLocalOllamaEndpoint(endpoint)) return "openai";
 
-  // Default to Ollama when .env sets VITE_OLLAMA_BASE_URL or typical ollama endpoint
   const ollamaBase = import.meta.env.VITE_OLLAMA_BASE_URL as string | undefined;
   if (ollamaBase || endpoint?.includes("11434")) return "ollama";
 
-  // No LLM configuration — use stub
   if (!explicit && !endpoint && !ollamaBase) return "stub";
 
   return "ollama";

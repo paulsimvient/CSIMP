@@ -151,6 +151,7 @@ const INITIAL_INTEL_STATE: IntelState = {
   validatedDecisionPoints: [],
 };
 const INTEL_SQL_KEY = "intel_state";
+const AUTO_HYDRATE_FROM_SQL = false;
 
 export const useIntelStore = create<IntelStore>()((set) => ({
   ...INITIAL_INTEL_STATE,
@@ -265,4 +266,6 @@ async function hydrateIntelState(): Promise<void> {
   useIntelStore.setState(sanitizeHydratedIntelState(snapshot));
 }
 
-void hydrateIntelState();
+if (AUTO_HYDRATE_FROM_SQL) {
+  void hydrateIntelState();
+}

@@ -1,6 +1,7 @@
 import { formatConstraintTraces } from "@coa/constraintTrace";
 import { buildCoaRankRationale } from "@coa/rankRationale";
 import type { CoaCandidate } from "@coa/types";
+import { formatHeuristicScore, HEURISTIC_ESTIMATE_NOTE } from "../../coa/scoreLabels";
 import { ConstraintTracePanel } from "../coa/CoaAuditPanels";
 import { CyberEffectsBadge } from "../coa/CyberEffectsBadge";
 import styles from "./CoaSelector.module.css";
@@ -78,10 +79,10 @@ function CoaCard({
         <StatusBadge status={status} />
       </div>
 
-      <div className={styles.scores}>
-        <ScoreBar label="Overall" value={scores.overall} highlight />
+      <div className={styles.scores} title={HEURISTIC_ESTIMATE_NOTE}>
+        <ScoreBar label="Heuristic Estimate overall" value={scores.overall} highlight />
         <ScoreBar label="Feasibility" value={scores.feasibility} />
-        <ScoreBar label="Effects" value={scores.effects} />
+        <ScoreBar label="Heuristic Estimate effects" value={scores.effects} />
         <ScoreBar label="Logistics" value={scores.logistics} />
         <ScoreBar label="Risk (low)" value={1 - scores.risk} inverted />
       </div>
@@ -96,8 +97,8 @@ function CoaCard({
           </span>
         )}
         {effects && (
-          <span className={styles.metaItem} title={effects.explanation}>
-            Impact {pct(effects.expectedImpact)} · Conf {pct(effects.confidence)}
+          <span className={styles.metaItem} title={HEURISTIC_ESTIMATE_NOTE}>
+            Impact {formatHeuristicScore(effects.expectedImpact).replace("Heuristic Estimate ", "")} · Conf {pct(effects.confidence)}
           </span>
         )}
       </div>
@@ -157,15 +158,19 @@ function CoaCard({
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: CoaCandidate["status"] }) {
-  const labels: Record<CoaCandidate["status"], string> = {
+  const labels: Partial<Record<CoaCandidate["status"], string>> = {
     sat: "SAT",
     unsat: "UNSAT",
     error: "ERR",
     insufficient_evidence: "LOW EVID",
+    draft: "DRAFT",
+    incomplete: "INCOMPLETE",
+    validating: "VALIDATING",
+    stale: "STALE",
   };
   return (
-    <span className={`${styles.badge} ${styles[`badge-${status}`]}`}>
-      {labels[status]}
+    <span className={`${styles.badge} ${styles[`badge-${status}`] ?? ""}`}>
+      {labels[status] ?? status.toUpperCase()}
     </span>
   );
 }

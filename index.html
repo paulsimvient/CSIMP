@@ -1,10 +1,19 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bg-theme="blue">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>CODA2 — COA Pipeline</title>
+    <script>
+      (function () {
+        var key = "coda2-bg-theme";
+        var theme = localStorage.getItem(key);
+        if (theme === "black" || theme === "grey" || theme === "blue") {
+          document.documentElement.dataset.bgTheme = theme;
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

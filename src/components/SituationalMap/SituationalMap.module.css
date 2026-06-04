@@ -55,6 +55,12 @@
   backdrop-filter: blur(2px);
   padding: 8px 9px;
   max-width: 230px;
+  pointer-events: none;
+}
+
+.mapOverlayLeft button,
+.mapOverlayRight button {
+  pointer-events: auto;
 }
 
 .mapOverlayLeft {
@@ -191,6 +197,13 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  position: relative;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.domainFilters button {
+  pointer-events: auto;
 }
 
 .domainToggle {
@@ -230,6 +243,7 @@
   background: rgba(7, 18, 33, 0.86);
   font-size: 10px;
   color: #87a9ce;
+  pointer-events: none;
 }
 
 .legend span {
@@ -262,6 +276,10 @@
 
 .marker-friendly {
   background: #5fd68b;
+}
+
+.marker-unknown {
+  background: #9ca3af;
 }
 
 .legendZoneBlue {

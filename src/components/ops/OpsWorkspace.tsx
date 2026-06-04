@@ -1,56 +1,73 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useEvidenceConflicts, useRankingSensitivity } from "@coa/store";
-import { CommanderMatrix } from "@components/CommanderMatrix";
-import { CommanderMatrixPopout } from "./CommanderMatrixPopout";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  ConstraintTracePanel,
-  EvidenceConflictsPanel,
-  RankingSensitivityPanel,
-} from "@components/coa/CoaAuditPanels";
-import { CyberEffectsBadge } from "@components/coa/CyberEffectsBadge";
-import { LogisticsMatrix } from "@components/LogisticsMatrix";
-import { SituationalMap } from "@components/SituationalMap";
+  executionStatusMessage,
+  getExecuteBlockers,
+  useExecuteCoaRevision,
+  useExecutedSnapshot,
+  useMatrixOverlay,
+  usePreparedExecution,
+  useUpdateMatrixOverlay,
+  useValidateOperatorCoa,
+  useDiscardOperatorCoa,
+  useRebaseOperatorCoa,
+  useMergeOperatorIntoParent,
+  useCreateImportedOperatorDraft,
+  useCreateOperatorDraft,
+  useForkOperatorModified,
+} from "@coa/store";
+import { useCoaStore } from "@coa/store";
 import type { DecisionPoint } from "../../intel/types";
 import type { useDisplayedPlan } from "@coa/store";
 import type { ObservedFact } from "../../intel/types";
-import type { CoaCandidate, LogisticsChip } from "../../coa/types";
-import { formatCoordLabel } from "../../scene/theater";
+import type { CoaCandidate } from "../../coa/types";
+import {
+  buildExecutionInteractionMap,
+  mergeFeatureCollections,
+} from "../../scene/executionInteractionMap";
 import type { MessageTrafficItem, OverviewTrack, ShowOrderItem } from "./types";
+import { useExecutionPlayback } from "./useExecutionPlayback";
+import { ExecutionFeedbackBanner } from "./ExecutionFeedbackBanner";
 import { MapLogisticsStack } from "./MapLogisticsStack";
+import {
+  WorkflowStepper,
+  deriveWorkflowStepState,
+  type WorkflowStepId,
+} from "./WorkflowStepper";
+import { MatrixTaskPanel } from "./MatrixTaskPanel";
+import { InspectorPanel } from "./InspectorPanel";
+import { RightSideDock, type RightSidePanel } from "./RightSideDock";
+import { ScenePickProvider, useScenePick } from "./ScenePickContext";
+import { TaskComposerProvider, useTaskComposer } from "./TaskComposerContext";
+import { TaskComposerLifecycle } from "./TaskComposerLifecycle";
 import { ResizableLayout } from "./ResizableLayout";
-import { ModelessWindow } from "./ModelessWindow";
-import { useOpsWindows, useOpsWindowsOptional } from "./OpsWindowsContext";
-import { WindowsMenu } from "./WindowsMenu";
-import { formatSimElapsed, SIM_TIME_SCALES } from "../../scene/kinematics";
+import { buildLogisticsPlan } from "../../coa/logistics";
+import { collectRevisionBlockers } from "../../coa/materializeCoaRevision";
+import {
+  applyManualEntryPatch,
+  validateManualEntry,
+  type ManualSyncEntry,
+  type ManualSyncTarget,
+  type MatrixComposerDraft,
+} from "../../coa/manualSync";
+import type { SyncMatrixBar } from "../../coa/syncMatrix";
+import {
+  buildManualOnlySyncMatrix,
+  buildSyncMatrixModel,
+  formatMatrixTick,
+} from "../../coa/syncMatrix";
+import { type SyncGridRowKey } from "../../coa/syncGridSchema";
+import type { BarPatch } from "@components/SyncMatrix";
+import { DecisionFlowPanel } from "./DecisionFlowPanel";
+import { EventTimeline, resolveTimelineFactId } from "./EventTimeline";
+import { OperationalMapPanel } from "./OperationalMapPanel";
+import type { ActiveView } from "./activeView";
 import styles from "../../App.module.css";
 
-type ActiveView =
-  | "overview"
-  | "simulation"
-  | "signals"
-  | "actions"
-  | "coas"
-  | "logistics"
-  | "reports"
-  | "trace";
-
-type OpsHeaderProps = {
-  activeView: ActiveView;
-  setActiveView: (view: ActiveView) => void;
-  simNowIso: string;
-  simClockPaused: boolean;
-  threatLevel: string;
-  confidenceLevel: string;
-  phase: string;
-  summaryTime: string;
-  environmentLabel: string;
-  onToggleClockPaused: () => void;
-  onRestartSim: () => void;
-  onExportTrace: () => void;
-};
+export { OpsHeader } from "./OpsHeader";
+export type { ActiveView } from "./activeView";
 
 type OpsWorkspaceProps = {
-  activeView: "overview" | "simulation";
+  activeView: "overview";
   setActiveView: (view: ActiveView) => void;
   phase: string;
   summaryTime: string;
@@ -58,863 +75,504 @@ type OpsWorkspaceProps = {
   summaryText: string;
   mapFacts: ObservedFact[];
   overviewTracks: OverviewTrack[];
+  scenePickTracks: OverviewTrack[];
   selectedOverviewTrack: OverviewTrack | undefined;
   setSelectedOverviewTrackId: (id: string) => void;
   reportWindowItems: MessageTrafficItem[];
   showOrders: ShowOrderItem[];
-  topActions: { id: string; description: string; confidence?: string }[];
+  topActions: {
+    id: string;
+    description: string;
+    confidence?: string;
+    citedFacts?: string[];
+    actionType?: string;
+    requiredAssets?: string[];
+  }[];
   candidates: CoaCandidate[];
   selectedCoaId: string | undefined;
   onSelectCoa: (id: string) => void;
   onRunCoaEvaluation: () => void;
+  onCreateOperatorCoa?: () => void;
   coaRunning: boolean;
-  simClockPaused: boolean;
-  simClockScale: number;
-  simClockLabel: string;
-  simElapsedMs: number;
-  onSetSimClockScale: (scale: number) => void;
-  onToggleSimPause: () => void;
-  onRestartSim: () => void;
   commanderIntent?: string;
   validatedDecisionPoints: DecisionPoint[];
   displayedPlan: ReturnType<typeof useDisplayedPlan>;
   coaPipelineStatus: "idle" | "running" | "ready" | "error";
+  generationBlockerDetail?: string;
+  generationError?: string;
+  knownAssets?: string[];
+  usingScenarioData?: boolean;
 };
-
-type TimelineFilter = "all" | "threats" | "sensors" | "decisions" | "system";
 
 const EMPTY_HIGHLIGHT_FACT_IDS: string[] = [];
 
-function formatStatus(track: OverviewTrack): "THREAT" | "FRIENDLY" | "UNKNOWN" | "STALE" {
-  if (track.stalenessState === "stale") return "STALE";
-  if (track.side === "hostile") return "THREAT";
-  if (track.side === "friendly") return "FRIENDLY";
-  return "UNKNOWN";
-}
-
-function MissionSummaryContent({
-  phase,
-  summaryTime,
-  environmentLabel,
+function MapClickBridge({
+  onInspectFact,
+  children,
 }: {
-  phase: string;
-  summaryTime: string;
-  environmentLabel: string;
+  onInspectFact: (factId: string) => void;
+  children: (onMapFactClick: (factId: string) => void) => ReactNode;
 }) {
-  return (
-    <div className={styles.summaryGrid}>
-      <span>Objective</span>
-      <strong>Maintain Strait Stability</strong>
-      <span>Area</span>
-      <strong>{environmentLabel}</strong>
-      <span>Primary Concern</span>
-      <strong>Multi-domain sensor degradation and strike risk</strong>
-      <span>Phase</span>
-      <strong>{phase}</strong>
-      <span>Time in Phase</span>
-      <strong>{summaryTime}</strong>
-    </div>
-  );
-}
+  const { handleMapFactClick, disarmFieldNow, options } = useScenePick();
+  const composer = useTaskComposer();
+  const onMapFactClick = useCallback(
+    (factId: string) => {
+      if (handleMapFactClick(factId)) {
+        composer.clearPickMode();
+        return;
+      }
 
-function MissionMenu(props: Pick<OpsHeaderProps, "phase" | "summaryTime" | "environmentLabel">) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
-
-  return (
-    <div className={styles.missionMenuWrap} ref={menuRef}>
-      <button
-        type="button"
-        className={open ? styles.headerButtonActive : styles.headerButton}
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-      >
-        Mission
-      </button>
-      {open && (
-        <div className={styles.missionPopover} role="dialog" aria-label="Mission summary">
-          <h3 className={styles.dashboardTitle}>Mission Summary</h3>
-          <MissionSummaryContent
-            phase={props.phase}
-            summaryTime={props.summaryTime}
-            environmentLabel={props.environmentLabel}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CommandHeader(props: OpsHeaderProps) {
-  const opsWindows = useOpsWindowsOptional();
-
-  return (
-    <header className={styles.commandHeader}>
-      <div className={styles.commandHeaderRow}>
-        <div className={styles.brandBlock}>
-          <div className={styles.brandTitle}>CODA2</div>
-          <div className={styles.brandSub}>COA Pipeline</div>
-        </div>
-        <div className={styles.headerStat}>
-          <span>Scenario</span>
-          <strong>Broken Signal</strong>
-        </div>
-        <div className={styles.headerStat}>
-          <span>Simulation</span>
-          <strong>{props.simClockPaused ? "PAUSED" : "RUNNING"}</strong>
-        </div>
-        <div className={styles.headerStat}>
-          <span>Sim Time</span>
-          <strong>{props.simNowIso.slice(11, 19)}</strong>
-        </div>
-        <div className={styles.headerStat}>
-          <span>Threat Level</span>
-          <strong>{props.threatLevel}</strong>
-        </div>
-        <div className={styles.headerStat}>
-          <span>Confidence</span>
-          <strong>{props.confidenceLevel}</strong>
-        </div>
-        <div className={styles.headerControls}>
-          {opsWindows && (
-            <WindowsMenu
-              windows={opsWindows.windows}
-              onShowWindow={opsWindows.showWindow}
-              onHideWindow={opsWindows.hideWindow}
-              onToggleMinimized={opsWindows.toggleMinimized}
-            />
-          )}
-          <MissionMenu
-            phase={props.phase}
-            summaryTime={props.summaryTime}
-            environmentLabel={props.environmentLabel}
-          />
-          <button type="button" className={styles.headerButton} onClick={props.onToggleClockPaused}>
-            {props.simClockPaused ? "Resume" : "Pause"}
-          </button>
-          <button type="button" className={styles.headerButton} onClick={props.onRestartSim}>
-            Restart
-          </button>
-          <button type="button" className={styles.headerButton} onClick={props.onExportTrace}>
-            Export Trace
-          </button>
-        </div>
-      </div>
-      <NavigationTabs activeView={props.activeView} setActiveView={props.setActiveView} />
-    </header>
-  );
-}
-
-function NavigationTabs({
-  activeView,
-  setActiveView,
-}: {
-  activeView: ActiveView;
-  setActiveView: (view: ActiveView) => void;
-}) {
-  const tabs: Array<{ id: ActiveView; label: string }> = [
-    { id: "overview", label: "Overview" },
-    { id: "simulation", label: "Simulation" },
-    { id: "coas", label: "COA" },
-    { id: "reports", label: "Reports" },
-    { id: "trace", label: "Decision Trace" },
-  ];
-  return (
-    <nav className={styles.commandNav}>
-      {tabs.map((tab) => (
-        <button
-          key={tab.id}
-          type="button"
-          className={activeView === tab.id ? styles.commandNavActive : styles.commandNavItem}
-          onClick={() => setActiveView(tab.id)}
-        >
-          {tab.label}
-        </button>
-      ))}
-    </nav>
-  );
-}
-
-function ActiveContactsPanel({
-  tracks,
-  selectedTrack,
-  selectedId,
-  onSelect,
-}: {
-  tracks: OverviewTrack[];
-  selectedTrack: OverviewTrack | undefined;
-  selectedId: string | undefined;
-  onSelect: (id: string) => void;
-}) {
-  const listTracks =
-    selectedTrack && !tracks.some((track) => track.id === selectedTrack.id)
-      ? [selectedTrack, ...tracks]
-      : tracks;
-
-  return (
-    <section className={`${styles.dashboardCard} ${styles.timelineCard}`}>
-      <h3 className={styles.dashboardTitle}>
-        Active Contacts
-        {tracks.length > 0 && (
-          <span className={styles.contactCount}> {tracks.length}</span>
-        )}
-      </h3>
-      <div className={styles.contactsList}>
-        {listTracks.length === 0 && (
-          <p className={styles.panelHint}>
-            No contacts in sensor range. Run the pipeline, <strong>Restart</strong>, or advance sim time.
-          </p>
-        )}
-        {listTracks.map((track) => {
-          const status = formatStatus(track);
-          return (
-            <button
-              key={track.id}
-              type="button"
-              className={selectedId === track.id ? styles.contactRowActive : styles.contactRow}
-              onClick={() => onSelect(track.id)}
-            >
-              <div className={styles.contactTopLine}>
-                <strong>{track.callsign}</strong>
-                <span
-                  className={`${styles.contactBadge} ${
-                    status === "THREAT"
-                      ? styles.badgeThreat
-                      : status === "FRIENDLY"
-                        ? styles.badgeFriendly
-                        : status === "STALE"
-                          ? styles.badgeStale
-                          : styles.badgeUnknown
-                  }`}
-                >
-                  {status}
-                </span>
-              </div>
-              <div className={styles.contactMeta}>
-                <span>{track.classification.toUpperCase()}</span>
-                <span>Alt {Math.max(120, track.uncertaintyMeters)}m</span>
-                <span>
-                  Spd{" "}
-                  {track.moving && track.speedKts
-                    ? `${Math.round(track.speedKts)} kts`
-                    : `${30 + Math.round(track.confidence * 40)} kts`}
-                </span>
-                {track.moving && track.headingDeg !== undefined && (
-                  <span>Hdg {track.headingDeg}°</span>
-                )}
-                <span>Conf {Math.round(track.confidence * 100)}%</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function formatTrackPosition(track: OverviewTrack): string {
-  if (!track.coordinates) return "—";
-  return formatCoordLabel([track.coordinates.lng, track.coordinates.lat]);
-}
-
-function SelectedTrackPanel({ track }: { track: OverviewTrack }) {
-  const status = formatStatus(track);
-  return (
-    <section className={styles.dashboardCard}>
-      <h3 className={styles.dashboardTitle}>Selected Track</h3>
-      <div className={styles.contactTopLine}>
-        <strong className={styles.trackDetailCallsign}>{track.callsign}</strong>
-        <span
-          className={`${styles.contactBadge} ${
-            status === "THREAT"
-              ? styles.badgeThreat
-              : status === "FRIENDLY"
-                ? styles.badgeFriendly
-                : status === "STALE"
-                  ? styles.badgeStale
-                  : styles.badgeUnknown
-          }`}
-        >
-          {status}
-        </span>
-      </div>
-      <div className={styles.trackDetailGrid}>
-        <span>Status</span><strong>{track.side.toUpperCase()}</strong>
-        <span>Type</span><strong>{track.classification.toUpperCase()}</strong>
-        <span>Altitude</span><strong>{Math.max(120, track.uncertaintyMeters)} m</strong>
-        <span>Speed</span>
-        <strong>
-          {track.moving && track.speedKts
-            ? `${Math.round(track.speedKts)} kts`
-            : `${30 + Math.round(track.confidence * 40)} kts`}
-        </strong>
-        <span>Heading</span>
-        <strong>{track.moving && track.headingDeg !== undefined ? `${track.headingDeg}°` : "—"}</strong>
-        <span>Position</span>
-        <strong className={styles.trackCoord}>{formatTrackPosition(track)}</strong>
-        <span>Confidence</span><strong>{Math.round(track.confidence * 100)}%</strong>
-        <span>Detected by</span><strong>{track.detectedBy || "—"}</strong>
-        <span>Last update</span><strong>{track.lastUpdate}</strong>
-      </div>
-      <p className={styles.trackDetailSummary}>{track.summary}</p>
-    </section>
-  );
-}
-
-type MapLayerMode = "main" | "sensors" | "threats" | "zones";
-
-type MissionTimePanelProps = {
-  simClockPaused: boolean;
-  simClockLabel: string;
-  simClockScale: number;
-  simElapsedMs: number;
-  onSetSimClockScale: (scale: number) => void;
-};
-
-function MissionTimePanel({
-  simClockPaused,
-  simClockLabel,
-  simClockScale,
-  simElapsedMs,
-  onSetSimClockScale,
-}: MissionTimePanelProps) {
-  return (
-    <div className={styles.opsSideSection} aria-label="Mission time controls">
-      <h4 className={styles.dashboardSubtitle}>Mission Time</h4>
-      <div className={styles.metricRow}>
-        <span>Clock state</span>
-        <strong>{simClockPaused ? "Paused" : "Running"}</strong>
-      </div>
-      <div className={styles.metricRow}>
-        <span>Sim elapsed</span>
-        <strong>{formatSimElapsed(simElapsedMs)}</strong>
-      </div>
-      <div className={styles.metricRow}>
-        <span>Compression</span>
-        <strong>{simClockLabel}</strong>
-      </div>
-      <div className={`${styles.timeScaleRow} ${styles.timeScaleRowWrap}`}>
-        {SIM_TIME_SCALES.map((scale) => (
-          <button
-            key={scale}
-            type="button"
-            className={simClockScale === scale ? styles.timelineFilterActive : styles.timelineFilter}
-            onClick={() => onSetSimClockScale(scale)}
-          >
-            x{scale}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function OperationalMapPanel({
-  mapFacts,
-  tracks,
-  selectedTrack,
-  focusFactId,
-  focusNonce,
-  highlightedFactIds,
-  simElapsedMs,
-  onFactIconClick,
-  onPinnedCoordUpdate,
-}: {
-  mapFacts: ObservedFact[];
-  tracks: OverviewTrack[];
-  selectedTrack: OverviewTrack | undefined;
-  focusFactId?: string;
-  focusNonce?: number;
-  highlightedFactIds?: string[];
-  simElapsedMs: number;
-  onFactIconClick: (factId: string) => void;
-  onPinnedCoordUpdate?: (factId: string, coord: [number, number]) => void;
-}) {
-  const [layerMode, setLayerMode] = useState<MapLayerMode>("main");
-  return (
-    <section className={`${styles.dashboardCard} ${styles.mapCardStretch} ${styles.mapCardFill}`}>
-      <div className={styles.panelHeaderRow}>
-        <h3 className={styles.dashboardTitle}>Operational Map</h3>
-        <div className={styles.mapPanelControls}>
-          <select
-            className={styles.layersSelect}
-            value={layerMode}
-            onChange={(e) => setLayerMode(e.target.value as MapLayerMode)}
-          >
-            <option value="main">Contacts</option>
-            <option value="sensors">Sensor Coverage</option>
-            <option value="zones">Mission Zones</option>
-            <option value="threats">Threat Tracks</option>
-          </select>
-        </div>
-      </div>
-      <div className={styles.mapPanel}>
-        <div className={styles.mapLibreHost}>
-          <SituationalMap
-            facts={mapFacts}
-            tracks={tracks}
-            selectedTrackId={selectedTrack?.id}
-            focusFactId={focusFactId}
-            focusNonce={focusNonce}
-            highlightedFactIds={highlightedFactIds}
-            simElapsedMs={simElapsedMs}
-            onFactIconClick={onFactIconClick}
-            onPinnedCoordUpdate={onPinnedCoordUpdate}
-            layerMode={layerMode}
-          />
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function RecommendedActionPanel({
-  recommendation,
-  selectedCoa,
-}: {
-  recommendation: string;
-  selectedCoa: CoaCandidate | undefined;
-}) {
-  const confidence = selectedCoa?.effects
-    ? Math.round(selectedCoa.effects.confidence * 100)
-    : selectedCoa?.scores
-      ? Math.round(selectedCoa.scores.overall * 100)
-      : 78;
-  const risk = selectedCoa?.scores
-    ? selectedCoa.scores.risk > 0.65
-      ? "HIGH"
-      : selectedCoa.scores.risk > 0.4
-        ? "MEDIUM"
-        : "LOW"
-    : "MEDIUM";
-  const riskColor =
-    risk === "HIGH" ? styles.warnTextHigh : risk === "MEDIUM" ? styles.warnText : styles.warnTextLow;
-  const explanation = selectedCoa?.effects?.explanation ?? recommendation;
-
-  return (
-    <section className={styles.dashboardCard}>
-      <h3 className={styles.dashboardTitle}>
-        {selectedCoa ? selectedCoa.label : "Recommended Action"}
-      </h3>
-      <p className={styles.recommendationText}>{explanation}</p>
-      <div className={styles.metricRow}>
-        <span>Confidence</span>
-        <strong>{confidence}%</strong>
-      </div>
-      <div className={styles.confidenceBar}>
-        <span style={{ width: `${confidence}%` }} />
-      </div>
-      <div className={styles.metricRow}>
-        <span>Risk</span>
-        <strong className={riskColor}>{risk}</strong>
-      </div>
-      {selectedCoa?.effects && (
-        <div className={styles.metricRow}>
-          <span>Time to effect</span>
-          <strong>{Math.round(selectedCoa.effects.timeToEffect / 60)} min</strong>
-        </div>
-      )}
-      <CyberEffectsBadge cyberEffects={selectedCoa?.effects?.cyberEffects} />
-      {selectedCoa?.effects?.risks && selectedCoa.effects.risks.length > 0 && (
-        <ul className={styles.constraintsList} style={{ marginTop: 8 }}>
-          {selectedCoa.effects.risks.slice(0, 2).map((r) => (
-            <li key={r} className={styles.warnText}>{r}</li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-const STUB_COAS = [
-  { id: "monitor", label: "Monitor", note: "Maintain current posture", score: null },
-  { id: "retask-isr", label: "Re-task ISR", note: "Increase surveillance coverage", score: null },
-  { id: "escalate", label: "Escalate", note: "Increase defensive posture", score: null },
-  { id: "interdict", label: "Interdict", note: "Engage to neutralize threat", score: null },
-];
-
-function coaStatusBadge(coa: CoaCandidate): string {
-  if (coa.status === "unsat") return "UNSAT";
-  if (coa.status === "insufficient_evidence") return "INSUFF.";
-  if (coa.status === "error") return "ERROR";
-  return coa.effects ? `${Math.round(coa.scores.overall * 100)}%` : "READY";
-}
-
-function COAList({
-  candidates,
-  selectedCoaId,
-  onSelectCoa,
-}: {
-  candidates: CoaCandidate[];
-  selectedCoaId: string | undefined;
-  onSelectCoa: (id: string) => void;
-}) {
-  const hasReal = candidates.length > 0;
-  return (
-    <section className={styles.dashboardCard}>
-      <h3 className={styles.dashboardTitle}>
-        Available COAs
-        {hasReal && (
-          <span className={styles.coaCount}> {candidates.length}</span>
-        )}
-      </h3>
-      <div className={styles.coaList}>
-        {hasReal
-          ? candidates.map((coa) => (
-              <button
-                key={coa.id}
-                type="button"
-                className={selectedCoaId === coa.id ? styles.coaRowActive : styles.coaRow}
-                onClick={() => onSelectCoa(coa.id)}
-              >
-                <div className={styles.coaTopLine}>
-                  <strong>{coa.label}</strong>
-                  <span className={coa.status === "sat" ? styles.coaScoreBadge : styles.coaBadgeUnsat}>
-                    {coaStatusBadge(coa)}
-                  </span>
-                </div>
-                {coa.effects && (
-                  <>
-                    <span className={styles.coaNote}>
-                      Impact {Math.round(coa.effects.expectedImpact * 100)}% · Risk{" "}
-                      {Math.round(coa.scores.risk * 100)}%
-                    </span>
-                    <CyberEffectsBadge
-                      cyberEffects={coa.effects.cyberEffects}
-                      compact
-                    />
-                  </>
-                )}
-                {!coa.effects && (
-                  <span className={styles.coaNote}>
-                    {coa.selectedActions.length} action{coa.selectedActions.length !== 1 ? "s" : ""}
-                  </span>
-                )}
-              </button>
-            ))
-          : STUB_COAS.map((coa) => (
-              <button
-                key={coa.id}
-                type="button"
-                className={selectedCoaId === coa.id ? styles.coaRowActive : styles.coaRow}
-                onClick={() => onSelectCoa(coa.id)}
-              >
-                <div className={styles.coaTopLine}>
-                  <strong>{coa.label}</strong>
-                </div>
-                <span className={styles.coaNote}>{coa.note}</span>
-              </button>
-            ))}
-      </div>
-    </section>
-  );
-}
-
-function ConstraintsCard() {
-  const items = [
-    "Limit asset hits ≤ 5",
-    "Monitor at least 12 threats",
-    "Preserve friendly corridor",
-  ];
-  return (
-    <section className={styles.dashboardCard}>
-      <h3 className={styles.dashboardTitle}>Constraints</h3>
-      <ul className={styles.constraintsList}>
-        {items.map((item) => (
-          <li key={item}>{item}</li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
-function resolveOrderFactId(order: ShowOrderItem): string | undefined {
-  if (order.factId) return order.factId;
-  if (order.id.startsWith("order-track-")) return order.id.slice("order-track-".length);
-  return undefined;
-}
-
-function ShowOrdersBody({
-  orders,
-  selectedOrderId,
-  onSelectOrder,
-}: {
-  orders: ShowOrderItem[];
-  selectedOrderId?: string;
-  onSelectOrder: (order: ShowOrderItem, factId: string) => void;
-}) {
-  return (
-    <div className={styles.actionsList}>
-      {orders.length === 0 && (
-        <div className={styles.orderRow}>
-          <span className={styles.orderLampHold} />
-          <span>No orders — run COA evaluation or select a track.</span>
-        </div>
-      )}
-      {orders.map((order) => {
-        const factId = resolveOrderFactId(order);
-        const lamp = (
-          <span
-            className={
-              order.status === "active"
-                ? styles.orderLampActive
-                : order.status === "queued"
-                  ? styles.orderLampQueued
-                  : styles.orderLampHold
-            }
-          />
-        );
-        const body = (
-          <>
-            <div className={styles.orderBody}>
-              <strong>{order.status.toUpperCase()}</strong>
-              <span>{order.order}</span>
-            </div>
-            <span className={styles.orderEta}>{order.eta}</span>
-          </>
-        );
-
-        if (!factId) {
-          return (
-            <div key={order.id} className={styles.orderRow}>
-              {lamp}
-              {body}
-            </div>
-          );
+      if (composer.isPickingFromMap()) {
+        const pickResult = composer.handlePassiveMapClick(factId, options);
+        if (pickResult === "applied") {
+          disarmFieldNow();
+          return;
         }
+        if (pickResult === "rejected") return;
+      }
 
-        return (
-          <button
-            key={order.id}
-            type="button"
-            className={
-              selectedOrderId === order.id
-                ? `${styles.orderRow} ${styles.orderRowButton} ${styles.orderRowActive}`
-                : `${styles.orderRow} ${styles.orderRowButton}`
-            }
-            onClick={() => onSelectOrder(order, factId)}
-            title="Show on map"
-          >
-            {lamp}
-            {body}
-          </button>
-        );
-      })}
-    </div>
+      onInspectFact(factId);
+    },
+    [
+      handleMapFactClick,
+      disarmFieldNow,
+      composer.clearPickMode,
+      composer.handlePassiveMapClick,
+      composer.isPickingFromMap,
+      options,
+      onInspectFact,
+    ]
   );
-}
-
-function CoaPlanningBody({
-  recommendation,
-  selectedCoa,
-  candidates,
-  selectedCoaId,
-  onSelectCoa,
-  onRunCoaEvaluation,
-  coaRunning,
-  commanderIntent,
-  validatedDecisionPoints,
-  onOpenCommanderMatrix,
-}: {
-  recommendation: string;
-  selectedCoa: CoaCandidate | undefined;
-  candidates: CoaCandidate[];
-  selectedCoaId: string | undefined;
-  onSelectCoa: (id: string) => void;
-  onRunCoaEvaluation: () => void;
-  coaRunning: boolean;
-  commanderIntent?: string;
-  validatedDecisionPoints: DecisionPoint[];
-  onOpenCommanderMatrix: () => void;
-}) {
-  const evidenceConflicts = useEvidenceConflicts();
-  const rankingSensitivity = useRankingSensitivity();
-
-  return (
-    <div className={styles.coaWindowStack}>
-      <RecommendedActionPanel recommendation={recommendation} selectedCoa={selectedCoa} />
-      <COAList
-        candidates={candidates}
-        selectedCoaId={selectedCoaId}
-        onSelectCoa={onSelectCoa}
-      />
-      <EvidenceConflictsPanel conflicts={evidenceConflicts} />
-      <ConstraintTracePanel candidate={selectedCoa} />
-      <RankingSensitivityPanel sensitivity={rankingSensitivity} />
-      <section className={styles.dashboardCard}>
-        <div className={styles.panelHeaderRow}>
-          <h3 className={styles.dashboardTitle}>Commander&apos;s Matrix</h3>
-          <button
-            type="button"
-            className={styles.headerButton}
-            onClick={onOpenCommanderMatrix}
-          >
-            Pop out
-          </button>
-        </div>
-        <CommanderMatrix
-          candidates={candidates}
-          selectedCoaId={selectedCoaId}
-          onSelectCoa={onSelectCoa}
-          commanderIntent={commanderIntent}
-          decisionPoints={validatedDecisionPoints}
-          evidenceConflicts={evidenceConflicts}
-          rankingSensitivity={rankingSensitivity}
-          compact
-          showAuditPanels={false}
-        />
-      </section>
-      <ConstraintsCard />
-      <button
-        className={styles.primaryAction}
-        type="button"
-        onClick={onRunCoaEvaluation}
-        disabled={coaRunning}
-      >
-        {coaRunning ? "Running COA..." : "Run COA Evaluation"}
-      </button>
-    </div>
-  );
-}
-
-function resolveTimelineFactId(item: MessageTrafficItem, tracks: OverviewTrack[]): string | undefined {
-  if (item.id.startsWith("fact-")) return item.id.slice("fact-".length);
-  for (const track of tracks) {
-    if (item.id.includes(`lifecycle-${track.id}-`)) return track.id;
-    if (item.text.includes(track.callsign)) return track.id;
-  }
-  return undefined;
-}
-
-function EventTimeline({
-  items,
-  tracks,
-  onFocusFact,
-  onEventNavigate,
-  highlightFactId,
-  embedded = false,
-}: {
-  items: MessageTrafficItem[];
-  tracks: OverviewTrack[];
-  onFocusFact: (factId: string) => void;
-  onEventNavigate: (item: MessageTrafficItem, factId?: string) => void;
-  highlightFactId?: string;
-  embedded?: boolean;
-}) {
-  const [filter, setFilter] = useState<TimelineFilter>("all");
-  const filtered = items.filter((item) => {
-    if (filter === "all") return true;
-    if (filter === "threats") return item.severity === "alert";
-    if (filter === "sensors") return item.kind === "track";
-    if (filter === "decisions") return item.kind === "ops" || item.kind === "validation";
-    return item.kind === "validation";
-  });
-
-  return (
-    <section className={embedded ? styles.timelineEmbed : styles.dashboardCard}>
-      <div className={styles.panelHeaderRow}>
-        {!embedded && <h3 className={styles.dashboardTitle}>Event Timeline</h3>}
-        <div className={styles.timelineFilters}>
-          {(["all", "threats", "sensors", "decisions", "system"] as const).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              className={filter === tab ? styles.timelineFilterActive : styles.timelineFilter}
-              onClick={() => setFilter(tab)}
-            >
-              {tab.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className={styles.timelineRows}>
-        {filtered.slice(0, 8).map((item) => {
-          const factId = resolveTimelineFactId(item, tracks);
-          return (
-          <button
-            key={item.id}
-            type="button"
-            className={`${styles.timelineRow} ${styles.timelineRowButton} ${
-              factId && highlightFactId === factId ? styles.timelineRowHighlighted : ""
-            }`}
-            onClick={() => {
-              if (factId) onFocusFact(factId);
-              onEventNavigate(item, factId);
-            }}
-          >
-            <span>{item.time}</span>
-            <span>{item.kind.toUpperCase()}</span>
-            <span>{item.text}</span>
-            <span>{item.id.replace(/^.*-/, "").toUpperCase()}</span>
-          </button>
-        )})}
-      </div>
-    </section>
-  );
-}
-
-function SystemStatusSection({ running }: { running: boolean }) {
-  return (
-    <div className={styles.opsSideSection}>
-      <h4 className={styles.dashboardSubtitle}>System Status</h4>
-      <div className={styles.systemGrid}>
-        <span>Sensors</span><strong>Operational</strong>
-        <span>Data Link</span><strong>Stable</strong>
-        <span>Comms</span><strong>Operational</strong>
-        <span>Simulation</span><strong>{running ? "Running" : "Paused"}</strong>
-      </div>
-      <div className={styles.radarMini} aria-hidden />
-    </div>
-  );
-}
-
-export function OpsHeader(props: OpsHeaderProps) {
-  return <CommandHeader {...props} />;
+  return <>{children(onMapFactClick)}</>;
 }
 
 export function OpsWorkspace(props: OpsWorkspaceProps) {
-  const selectedCoa = props.candidates.find((c) => c.id === props.selectedCoaId);
-  const { windows, showWindow, hideWindow, setMinimized } = useOpsWindows();
-  const [focusFactId, setFocusFactId] = useState<string | undefined>(undefined);
+  const selectedCoa = props.candidates.find((candidate) => candidate.id === props.selectedCoaId);
+  const fallbackCandidate = selectedCoa ?? props.candidates.find((candidate) => candidate.selectedActions.length > 0);
+  const executedSnapshot = useExecutedSnapshot();
+  const preparedExecution = usePreparedExecution();
+  const updateMatrixOverlay = useUpdateMatrixOverlay();
+  const validateOperatorCoa = useValidateOperatorCoa();
+  const executeCoaRevision = useExecuteCoaRevision();
+  const discardOperatorCoa = useDiscardOperatorCoa();
+  const rebaseOperatorCoa = useRebaseOperatorCoa();
+  const mergeOperatorIntoParent = useMergeOperatorIntoParent();
+  const createImportedOperatorDraft = useCreateImportedOperatorDraft();
+  const createOperatorDraft = useCreateOperatorDraft();
+  const forkOperatorModified = useForkOperatorModified();
+  const storeSelectedCoaId = useCoaStore((s) => s.selectedCoaId);
+  const overlayCoaId = storeSelectedCoaId ?? props.selectedCoaId;
+  const matrixOverlay = useMatrixOverlay(overlayCoaId);
+  const manualEntries = matrixOverlay.manualEntries;
+  const barPatches = matrixOverlay.barPatches;
+  const hiddenBarIds = matrixOverlay.hiddenBarIds;
+  const modifiedBarIds = matrixOverlay.modifiedBarIds;
+  const [focusFactId, setFocusFactId] = useState<string | undefined>();
   const [focusNonce, setFocusNonce] = useState(0);
-  const [timelineHighlightFactId, setTimelineHighlightFactId] = useState<string | undefined>(undefined);
-  const [highlightedOrderId, setHighlightedOrderId] = useState<string | undefined>(undefined);
-  const [selectedLogisticsChipId, setSelectedLogisticsChipId] = useState<string | undefined>();
   const [liveTrackCoord, setLiveTrackCoord] = useState<[number, number] | null>(null);
-  const recommendation =
-    props.topActions[0]?.description ??
-    "Re-task ISR to verify mixed tracks and protect Taiwan Strait corridors.";
-
-  const selectTrack = (factId: string) => {
-    props.setSelectedOverviewTrackId(factId);
-    setTimelineHighlightFactId(factId);
-    setLiveTrackCoord(null);
+  const [composerDraft, setComposerDraft] = useState<MatrixComposerDraft | null>(null);
+  const setManualEntries = (
+    updater: ManualSyncEntry[] | ((prev: ManualSyncEntry[]) => ManualSyncEntry[])
+  ) => {
+    let coaId = overlayCoaId;
+    if (!coaId) {
+      coaId = createOperatorDraft();
+    }
+    if (!coaId) return;
+    updateMatrixOverlay(coaId, (prev) => {
+      const current = prev.manualEntries;
+      const next = typeof updater === "function" ? updater(current) : updater;
+      return { ...prev, manualEntries: next };
+    });
   };
+  const [authorTarget, setAuthorTarget] = useState<ManualSyncTarget | null>(null);
+  const [selectedSyncBar, setSelectedSyncBar] = useState<SyncMatrixBar | null>(null);
+  const [composerPreviewFactIds, setComposerPreviewFactIds] = useState<string[]>([]);
+  const [actionPreviewGeoJson, setActionPreviewGeoJson] =
+    useState<GeoJSON.FeatureCollection | null>(null);
+  const [composerResetNonce, setComposerResetNonce] = useState(0);
+  const [pendingComposerBar, setPendingComposerBar] = useState<SyncMatrixBar | null>(null);
+  const [inspectedFactId, setInspectedFactId] = useState<string | undefined>();
+  const [rightSidePanel, setRightSidePanel] = useState<RightSidePanel>("workflow");
+  const feasibleCoas = props.candidates.filter((candidate) => candidate.status === "sat");
+  const logisticsReady = props.displayedPlan.kind === "populated";
+  const materializeContext = useMemo(
+    () => ({
+      intelActions: props.topActions.map((action) => ({
+        id: action.id,
+        description: action.description,
+        citedFacts: action.citedFacts ?? [],
+        actionType: action.actionType,
+        requiredAssets: action.requiredAssets,
+      })),
+      observedFacts: props.mapFacts,
+      coaLabel: selectedCoa?.label,
+    }),
+    [props.topActions, props.mapFacts, selectedCoa?.label]
+  );
+  const executeBlockers = useMemo(
+    () =>
+      getExecuteBlockers({
+        candidate: selectedCoa,
+        overlay: matrixOverlay,
+        preparedExecution,
+        coaRunning: props.coaRunning,
+        logisticsReady,
+        materializeContext,
+      }),
+    [
+      selectedCoa,
+      matrixOverlay,
+      preparedExecution,
+      props.coaRunning,
+      logisticsReady,
+      materializeContext,
+    ]
+  );
+  const blockingExecute = executeBlockers.filter(
+    (reason) => !reason.includes("Prepare execution")
+  );
+  const canClickExecute = Boolean(
+    selectedCoa && blockingExecute.length === 0 && !props.coaRunning
+  );
+  const [matrixValidationFeedback, setMatrixValidationFeedback] = useState<{
+    kind: "success" | "error";
+    messages: string[];
+  } | null>(null);
+  const [operatorValidationFeedback, setOperatorValidationFeedback] = useState<{
+    kind: "success" | "error";
+    messages: string[];
+  } | null>(null);
+  const matrixExecuteBlocker = blockingExecute[0];
+
+  const handleMatrixValidate = useCallback(() => {
+    if (!selectedCoa) {
+      setMatrixValidationFeedback({
+        kind: "error",
+        messages: ["Select a COA in Step 03 before validating the matrix."],
+      });
+      return;
+    }
+    const taskBlockers = collectRevisionBlockers(
+      selectedCoa,
+      matrixOverlay,
+      materializeContext
+    );
+    if (taskBlockers.length > 0) {
+      setMatrixValidationFeedback({
+        kind: "error",
+        messages: taskBlockers,
+      });
+      return;
+    }
+    if (matrixExecuteBlocker) {
+      setMatrixValidationFeedback({
+        kind: "success",
+        messages: [
+          "Matrix tasks look good.",
+          `Execute is still blocked: ${matrixExecuteBlocker}`,
+        ],
+      });
+      return;
+    }
+    setMatrixValidationFeedback({
+      kind: "success",
+      messages: [
+        preparedExecution
+          ? "Matrix is ready — use Execute (next to Validate) to commit."
+          : "Matrix is ready — use Execute (next to Validate) to prepare and commit.",
+      ],
+    });
+  }, [
+    selectedCoa,
+    matrixOverlay,
+    materializeContext,
+    matrixExecuteBlocker,
+    preparedExecution,
+  ]);
+
+  const handleValidateOperator = useCallback(async () => {
+    if (!props.selectedCoaId) {
+      setOperatorValidationFeedback({
+        kind: "error",
+        messages: ["No COA selected. Choose an operator draft in Step 03."],
+      });
+      setRightSidePanel("workflow");
+      return;
+    }
+    setOperatorValidationFeedback(null);
+    setRightSidePanel("workflow");
+    const result = await validateOperatorCoa(props.selectedCoaId, materializeContext);
+    if (result.ok) {
+      setOperatorValidationFeedback({
+        kind: "success",
+        messages: ["Operator COA validated. Execute is available when the matrix has no blockers."],
+      });
+      return;
+    }
+    setOperatorValidationFeedback({
+      kind: "error",
+      messages: result.blockers,
+    });
+  }, [props.selectedCoaId, validateOperatorCoa, materializeContext]);
+  useEffect(() => {
+    setMatrixValidationFeedback(null);
+    setOperatorValidationFeedback(null);
+  }, [props.selectedCoaId, matrixOverlay.revisionId]);
+  const executionMessage = executionStatusMessage(executedSnapshot, selectedCoa);
+  const recommendation =
+    "Generate COAs from the event, then select a feasible response to load its complete order set.";
+  const generationProgress = props.coaRunning
+    ? 62
+    : props.coaPipelineStatus === "error"
+      ? 100
+      : props.candidates.length > 0 || props.coaPipelineStatus === "ready"
+        ? 100
+        : 0;
+  const generationStatusLabel = props.coaRunning
+    ? "Generating COAs..."
+    : props.coaPipelineStatus === "error"
+      ? "Generation failed"
+      : generationProgress === 100
+        ? "COAs ready"
+        : "Idle";
+  const logisticsEmptyContext = useMemo(
+    () => ({
+      pipelineStatus: props.coaPipelineStatus,
+      selectedCoaLabel: selectedCoa?.label,
+      selectedCoaStatus: selectedCoa?.status,
+      satCount: feasibleCoas.length,
+      blockedDetail: props.generationBlockerDetail,
+      generationError: props.generationError,
+    }),
+    [
+      props.coaPipelineStatus,
+      selectedCoa?.label,
+      selectedCoa?.status,
+      feasibleCoas.length,
+      props.generationBlockerDetail,
+      props.generationError,
+    ]
+  );
+
+  const syncDecisionPoints = useMemo(
+    () =>
+      props.validatedDecisionPoints.map((dp) => ({
+        id: dp.id,
+        question: dp.question,
+        triggerFacts: dp.triggerFacts,
+      })),
+    [props.validatedDecisionPoints]
+  );
+  const intelActionContext = useMemo(
+    () =>
+      props.topActions.map((action) => ({
+        id: action.id,
+        description: action.description,
+        citedFacts: action.citedFacts ?? [],
+        actionType: action.actionType,
+        requiredAssets: action.requiredAssets,
+      })),
+    [props.topActions]
+  );
+
+  const provisionalPlan = useMemo(() => {
+    if (props.displayedPlan.kind === "populated") return null;
+    if (!fallbackCandidate || fallbackCandidate.selectedActions.length === 0) return null;
+    return buildLogisticsPlan({
+      coaId: fallbackCandidate.id,
+      actions: fallbackCandidate.selectedActions,
+      source: "validated-intel",
+      intelActions: intelActionContext,
+      observedFacts: props.mapFacts,
+    });
+  }, [
+    props.displayedPlan.kind,
+    fallbackCandidate,
+    intelActionContext,
+    props.mapFacts,
+  ]);
+  const matrixPlan = props.displayedPlan.kind === "populated" ? props.displayedPlan : provisionalPlan ?? props.displayedPlan;
+  const isProvisionalMatrix = props.displayedPlan.kind !== "populated" && matrixPlan.kind === "populated";
+
+  const visibleMatrixBars = useMemo((): SyncMatrixBar[] => {
+    const baseInput = {
+      qualityContext: logisticsEmptyContext,
+      provisional: isProvisionalMatrix,
+      manualEntries,
+      modifiedBarIds,
+      barPatches,
+      hiddenBarIds,
+      commanderIntent: props.commanderIntent,
+      decisionPoints: syncDecisionPoints,
+      observedFacts: props.mapFacts,
+      coaLabel: selectedCoa?.label,
+    };
+    const model =
+      matrixPlan.kind === "populated"
+        ? buildSyncMatrixModel({ plan: matrixPlan, ...baseInput })
+        : manualEntries.length > 0
+          ? buildManualOnlySyncMatrix(manualEntries, baseInput)
+          : null;
+    if (!model) return [];
+    return model.rows.flatMap((row) => row.bars).filter((bar) => !bar.isManual);
+  }, [
+    logisticsEmptyContext,
+    isProvisionalMatrix,
+    manualEntries,
+    modifiedBarIds,
+    barPatches,
+    hiddenBarIds,
+    props.commanderIntent,
+    syncDecisionPoints,
+    props.mapFacts,
+    selectedCoa?.label,
+    matrixPlan,
+  ]);
+
+  const syncMatrixModel = useMemo(() => {
+    const baseInput = {
+      qualityContext: logisticsEmptyContext,
+      provisional: isProvisionalMatrix,
+      manualEntries,
+      modifiedBarIds,
+      barPatches,
+      hiddenBarIds,
+      commanderIntent: props.commanderIntent,
+      decisionPoints: syncDecisionPoints,
+      observedFacts: props.mapFacts,
+      coaLabel: selectedCoa?.label,
+    };
+    if (matrixPlan.kind === "populated") {
+      return buildSyncMatrixModel({ plan: matrixPlan, ...baseInput });
+    }
+    if (manualEntries.length > 0) {
+      return buildManualOnlySyncMatrix(manualEntries, baseInput);
+    }
+    return null;
+  }, [
+    logisticsEmptyContext,
+    isProvisionalMatrix,
+    manualEntries,
+    modifiedBarIds,
+    barPatches,
+    hiddenBarIds,
+    props.commanderIntent,
+    syncDecisionPoints,
+    props.mapFacts,
+    selectedCoa?.label,
+    matrixPlan,
+  ]);
+  const syncTickIntervalSec = syncMatrixModel?.tickIntervalSec ?? 900;
+  const syncHorizonSec = syncMatrixModel?.horizonSec ?? 24 * 3600;
+  const { executionEvents, activeExecutionTaskIds, isPlaying, playbackStatus } =
+    useExecutionPlayback(executedSnapshot);
+  const workflowStepState = useMemo(
+    () =>
+      deriveWorkflowStepState({
+        hasEventContext:
+          Boolean(props.summaryText) &&
+          props.summaryText !== "Run pipeline to load scenario facts and recommendations.",
+        coaRunning: props.coaRunning,
+        candidateCount: props.candidates.length,
+        selectedCoaId: props.selectedCoaId,
+        logisticsReady,
+        canExecute: canClickExecute,
+        isExecuting: Boolean(executionMessage) || isPlaying,
+      }),
+    [
+      props.summaryText,
+      props.coaRunning,
+      props.candidates.length,
+      props.selectedCoaId,
+      logisticsReady,
+      canClickExecute,
+      executionMessage,
+      isPlaying,
+    ]
+  );
+  const matrixSectionRef = useRef<HTMLDivElement>(null);
+  const handleWorkflowStepSelect = useCallback((step: WorkflowStepId) => {
+    if (step === "matrix") {
+      matrixSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+    setRightSidePanel("workflow");
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector(`[data-workflow-step="${step}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, []);
+  const executionCompletedBarIds = useMemo(() => {
+    if (!executedSnapshot || isPlaying) return undefined;
+    return new Set(executedSnapshot.orderSet.tasks.map((task) => task.id));
+  }, [executedSnapshot, isPlaying]);
+  const [executeError, setExecuteError] = useState<string | null>(null);
+
+  const handleExecuteCoa = useCallback(() => {
+    if (!props.selectedCoaId) return;
+    setExecuteError(null);
+    const result = executeCoaRevision(props.selectedCoaId, materializeContext);
+    if (!result.ok) {
+      setExecuteError(
+        result.blockers[0] ??
+          "Execute did not commit — validate the COA, prepare execution, and try again."
+      );
+      return;
+    }
+    setRightSidePanel("workflow");
+  }, [props.selectedCoaId, materializeContext, executeCoaRevision]);
+  const timelineItems = useMemo(
+    () => [...executionEvents, ...props.reportWindowItems],
+    [executionEvents, props.reportWindowItems]
+  );
+  const executionBars = useMemo(
+    () => syncMatrixModel?.rows.flatMap((row) => row.bars) ?? [],
+    [syncMatrixModel]
+  );
+  const shouldRenderTaskLinks = Boolean(
+    executedSnapshot ||
+      (selectedCoa?.validationStatus === "validated" &&
+        selectedCoa.status === "sat" &&
+        executionBars.length > 0)
+  );
+  const executionInteractionGeoJson = useMemo(() => {
+    if (!shouldRenderTaskLinks || executionBars.length === 0) return null;
+    return buildExecutionInteractionMap({
+      bars: executionBars,
+      facts: props.mapFacts,
+      tracks: props.overviewTracks,
+      manualEntries,
+      activeBarIds:
+        executedSnapshot && isPlaying && activeExecutionTaskIds.size > 0
+          ? activeExecutionTaskIds
+          : undefined,
+    });
+  }, [
+    shouldRenderTaskLinks,
+    executedSnapshot,
+    executionBars,
+    props.mapFacts,
+    props.overviewTracks,
+    manualEntries,
+    isPlaying,
+    activeExecutionTaskIds,
+  ]);
+  const mapActionPreview = useMemo(
+    () => mergeFeatureCollections(executionInteractionGeoJson, actionPreviewGeoJson),
+    [executionInteractionGeoJson, actionPreviewGeoJson]
+  );
+
+  useEffect(() => {
+    setSelectedSyncBar(null);
+    setComposerDraft(null);
+    setInspectedFactId(undefined);
+  }, [props.selectedCoaId]);
 
   useEffect(() => {
     setLiveTrackCoord(null);
   }, [props.selectedOverviewTrack?.id]);
-
-  useEffect(() => {
-    setSelectedLogisticsChipId(undefined);
-  }, [props.selectedCoaId]);
 
   const displayedSelectedTrack = useMemo(() => {
     if (!props.selectedOverviewTrack) return undefined;
@@ -924,252 +582,544 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       coordinates: { lat: liveTrackCoord[1], lng: liveTrackCoord[0] },
     };
   }, [props.selectedOverviewTrack, liveTrackCoord]);
-
-  const focusTrackOnMap = (factId: string) => {
-    selectTrack(factId);
-    setFocusFactId(factId);
-    setFocusNonce((n) => n + 1);
-  };
-
-  const highlightedFactIds = useMemo((): string[] => {
-    if (props.displayedPlan.kind !== "populated" || !selectedLogisticsChipId) {
-      return EMPTY_HIGHLIGHT_FACT_IDS;
-    }
-    const chip = props.displayedPlan.chips.find((c) => c.id === selectedLogisticsChipId);
-    return chip?.linkedFactIds?.length ? [...chip.linkedFactIds] : EMPTY_HIGHLIGHT_FACT_IDS;
-  }, [props.displayedPlan, selectedLogisticsChipId]);
-
-  const handleLogisticsChipSelect = (chip: LogisticsChip) => {
-    setSelectedLogisticsChipId(chip.id);
-    const primaryFact = chip.linkedFactIds?.[0];
-    if (primaryFact) {
-      const linkedOrder = props.showOrders.find(
-        (order) => order.factId === primaryFact || order.id === `order-log-${chip.id}`
-      );
-      if (linkedOrder) setHighlightedOrderId(linkedOrder.id);
-      focusTrackOnMap(primaryFact);
-    }
-  };
-
-  const navigateFromOrder = (order: ShowOrderItem, factId: string) => {
-    setHighlightedOrderId(order.id);
-    if (order.id.startsWith("order-log-")) {
-      setSelectedLogisticsChipId(order.id.slice("order-log-".length));
-    }
-    if (factId) focusTrackOnMap(factId);
-  };
-
-  useEffect(() => {
-    const trackId = props.selectedOverviewTrack?.id;
-    if (!trackId) return;
-    const linkedOrder = props.showOrders.find(
-      (order) => resolveOrderFactId(order) === trackId
-    );
-    if (linkedOrder) setHighlightedOrderId(linkedOrder.id);
-  }, [props.selectedOverviewTrack?.id, props.showOrders]);
-  const navigateFromEvent = (item: MessageTrafficItem, factId?: string) => {
-    if (factId) {
-      setTimelineHighlightFactId(factId);
-      showWindow("timeline");
-      focusTrackOnMap(factId);
-      return;
-    }
-
-    // Fallback tie-in: infer track by callsign mention in event text.
-    const matchedTrack = props.overviewTracks.find((track) => item.text.includes(track.callsign));
-    if (matchedTrack) {
-      setTimelineHighlightFactId(matchedTrack.id);
-      showWindow("timeline");
-      focusTrackOnMap(matchedTrack.id);
-    }
-  };
-
-  const leftPanel = (
-    <>
-      <ActiveContactsPanel
-        tracks={props.overviewTracks}
-        selectedTrack={displayedSelectedTrack}
-        selectedId={props.selectedOverviewTrack?.id}
-        onSelect={selectTrack}
-      />
-      {displayedSelectedTrack && <SelectedTrackPanel track={displayedSelectedTrack} />}
-    </>
-  );
-
-  const logisticsEmptyContext = useMemo(
-    () => ({
-      pipelineStatus: props.coaPipelineStatus,
-      selectedCoaLabel: selectedCoa?.label,
-      selectedCoaStatus: selectedCoa?.status,
-      satCount: props.candidates.filter((c) => c.status === "sat").length,
-    }),
-    [
-      props.coaPipelineStatus,
-      selectedCoa?.label,
-      selectedCoa?.status,
-      props.candidates,
-    ]
-  );
-
-  const centerPanel = (
-    <MapLogisticsStack
-      selectedCoaLabel={selectedCoa?.label}
-      displayedPlan={props.displayedPlan}
-      selectedChipId={selectedLogisticsChipId}
-      onChipSelect={handleLogisticsChipSelect}
-      emptyContext={logisticsEmptyContext}
-      map={
-        <OperationalMapPanel
-          mapFacts={props.mapFacts}
-          tracks={props.overviewTracks}
-          selectedTrack={props.selectedOverviewTrack}
-          focusFactId={focusFactId}
-          focusNonce={focusNonce}
-          highlightedFactIds={highlightedFactIds}
-          simElapsedMs={props.simElapsedMs}
-          onFactIconClick={selectTrack}
-          onPinnedCoordUpdate={(factId, coord) => {
-            if (factId === props.selectedOverviewTrack?.id) {
-              setLiveTrackCoord(coord);
-            }
-          }}
-        />
+  const highlightedFactIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (focusFactId) ids.add(focusFactId);
+    if (authorTarget?.factId) ids.add(authorTarget.factId);
+    selectedSyncBar?.targetFactIds?.forEach((id) => ids.add(id));
+    composerPreviewFactIds.forEach((id) => ids.add(id));
+    manualEntries
+      .filter((entry) => entry.targetFactId && focusFactId === entry.targetFactId)
+      .forEach((entry) => entry.targetFactId && ids.add(entry.targetFactId));
+    if (shouldRenderTaskLinks && executionBars.length > 0) {
+      const activeBars =
+        activeExecutionTaskIds.size > 0
+          ? executionBars.filter((bar) => activeExecutionTaskIds.has(bar.id))
+          : executionBars;
+      for (const bar of activeBars) {
+        bar.targetFactIds?.forEach((id) => ids.add(id));
+        const entry = manualEntries.find((item) => item.id === bar.id);
+        if (entry?.targetFactId) ids.add(entry.targetFactId);
       }
-    />
+    }
+    if (ids.size > 0) return [...ids];
+    return props.selectedOverviewTrack?.id
+      ? [props.selectedOverviewTrack.id]
+      : EMPTY_HIGHLIGHT_FACT_IDS;
+  }, [
+    focusFactId,
+    authorTarget?.factId,
+    selectedSyncBar,
+    composerPreviewFactIds,
+    manualEntries,
+    props.selectedOverviewTrack?.id,
+    shouldRenderTaskLinks,
+    executionBars,
+    activeExecutionTaskIds,
+  ]);
+
+  const highlightTrackOnMap = useCallback(
+    (factId: string) => {
+      props.setSelectedOverviewTrackId(factId);
+      setFocusFactId(factId);
+      setFocusNonce((nonce) => nonce + 1);
+    },
+    [props.setSelectedOverviewTrackId]
   );
 
-  const rightPanel = (
-    <section className={`${styles.dashboardCard} ${styles.opsSidePanel}`}>
-      <h3 className={styles.dashboardTitle}>Simulation</h3>
-      <p className={styles.panelHint}>
-        COA, orders, and timeline: <strong>Windows</strong> menu (header).
-      </p>
-      <MissionTimePanel
-        simClockPaused={props.simClockPaused}
-        simClockLabel={props.simClockLabel}
-        simClockScale={props.simClockScale}
-        simElapsedMs={props.simElapsedMs}
-        onSetSimClockScale={props.onSetSimClockScale}
-      />
-      <div className={styles.secondaryActions}>
-        <button type="button" className={styles.headerButton} onClick={props.onToggleSimPause}>
-          Pause Sim
-        </button>
-        <button type="button" className={styles.headerButton} onClick={props.onRestartSim}>
-          Restart Sim
-        </button>
-      </div>
-      <SystemStatusSection running={!props.simClockPaused} />
-    </section>
+  const inspectSceneObject = (factId: string) => {
+    highlightTrackOnMap(factId);
+    setInspectedFactId(factId);
+    setRightSidePanel("inspector");
+  };
+
+  const openMatrixComposer = useCallback(() => {
+    setSelectedSyncBar(null);
+    setPendingComposerBar(null);
+    setComposerDraft(null);
+    setAuthorTarget(null);
+    setComposerPreviewFactIds([]);
+    setActionPreviewGeoJson(null);
+    setComposerResetNonce((nonce) => nonce + 1);
+  }, []);
+
+  const inspectedFact = useMemo(
+    () =>
+      inspectedFactId
+        ? props.mapFacts.find((item) => item.id === inspectedFactId)
+        : undefined,
+    [inspectedFactId, props.mapFacts]
+  );
+
+  const inspectedTrack = useMemo(() => {
+    const trackId = inspectedFactId ?? props.selectedOverviewTrack?.id;
+    if (!trackId) return undefined;
+    return (
+      props.overviewTracks.find((track) => track.id === trackId) ??
+      (props.selectedOverviewTrack?.id === trackId ? props.selectedOverviewTrack : undefined)
+    );
+  }, [inspectedFactId, props.overviewTracks, props.selectedOverviewTrack]);
+
+  const sceneSelectionFactId =
+    focusFactId ?? props.selectedOverviewTrack?.id ?? inspectedFactId;
+
+  const handleBarPatch = (barId: string, patch: BarPatch) => {
+    const coaId = overlayCoaId ?? createOperatorDraft();
+    if (!coaId) return;
+    updateMatrixOverlay(coaId, (prev) => ({
+      ...prev,
+      barPatches: { ...prev.barPatches, [barId]: { ...prev.barPatches[barId], ...patch } },
+      modifiedBarIds: prev.modifiedBarIds.includes(barId)
+        ? prev.modifiedBarIds
+        : [...prev.modifiedBarIds, barId],
+    }));
+  };
+
+  const handleCreateManualAtCell = (rowKey: SyncGridRowKey, startSec: number) => {
+    setComposerDraft({ rowKey, startSec });
+    setSelectedSyncBar(null);
+    setPendingComposerBar(null);
+  };
+
+  const handleManualEntryUpdate = (entry: ManualSyncEntry) => {
+    const validated = validateManualEntry(entry);
+    setManualEntries((prev) =>
+      prev.map((item) => (item.id === validated.id ? validated : item))
+    );
+    if (overlayCoaId) {
+      updateMatrixOverlay(overlayCoaId, (prev) => {
+        const nextPatches = { ...prev.barPatches };
+        delete nextPatches[validated.id];
+        return { ...prev, barPatches: nextPatches };
+      });
+    }
+  };
+
+  const handleConfirmManualEntry = (entry: ManualSyncEntry) => {
+    const validated = validateManualEntry(entry);
+    if (composerDraft?.entryId) {
+      setManualEntries((prev) =>
+        prev.map((item) => (item.id === composerDraft.entryId ? validated : item))
+      );
+    } else {
+      setManualEntries((prev) => [...prev, validated]);
+    }
+    setComposerDraft(null);
+    setAuthorTarget(null);
+  };
+
+  const handleCancelComposer = () => {
+    setComposerDraft(null);
+    setAuthorTarget(null);
+    setSelectedSyncBar(null);
+    setPendingComposerBar(null);
+    setComposerPreviewFactIds([]);
+    setActionPreviewGeoJson(null);
+    setComposerResetNonce((nonce) => nonce + 1);
+  };
+
+  const closeMatrixEditor = () => {
+    setSelectedSyncBar(null);
+    setPendingComposerBar(null);
+    setComposerPreviewFactIds([]);
+    setActionPreviewGeoJson(null);
+    setComposerResetNonce((nonce) => nonce + 1);
+  };
+
+  const handleEditBarSave = useCallback(
+    (patch: {
+      actor?: string;
+      target?: string;
+      targetFactId?: string;
+      actionVerb?: string;
+      startSec: number;
+      durationSec: number;
+      status: SyncMatrixBar["status"];
+      rowKey: string;
+      subLabel?: string;
+      dependency?: string;
+      dependencyBarId?: string;
+      startCondition?: string;
+    }) => {
+      const bar = selectedSyncBar;
+      if (!bar) return;
+      if (bar.isManual) {
+        const entry = manualEntries.find((item) => item.id === bar.id);
+        if (entry) {
+          handleManualEntryUpdate(
+            validateManualEntry(
+              applyManualEntryPatch(entry, {
+                actor: patch.actor,
+                target: patch.target,
+                targetFactId: patch.targetFactId,
+                actionVerb: patch.actionVerb,
+                startSec: patch.startSec,
+                durationSec: patch.durationSec,
+                status: patch.status,
+                rowKey: patch.rowKey as SyncGridRowKey,
+                subLabel: patch.subLabel,
+                dependency: patch.dependency,
+                dependencyBarId: patch.dependencyBarId,
+                startCondition: patch.startCondition,
+                timingUnresolved: [],
+                endTimeLabel: formatMatrixTick(
+                  patch.startSec + patch.durationSec,
+                  syncTickIntervalSec
+                ),
+              })
+            )
+          );
+        }
+      } else {
+        handleBarPatch(bar.id, {
+          actor: patch.actor,
+          target: patch.target,
+          actionVerb: patch.actionVerb,
+          startSec: patch.startSec,
+          durationSec: patch.durationSec,
+          status: patch.status,
+          rowKey: patch.rowKey,
+          subLabel: patch.subLabel,
+          targetFactIds: patch.targetFactId ? [patch.targetFactId] : [],
+        });
+      }
+      closeMatrixEditor();
+    },
+    [selectedSyncBar, manualEntries, syncTickIntervalSec]
+  );
+
+  const handleEditBarDuplicate = useCallback(() => {
+    const bar = selectedSyncBar;
+    if (!bar?.isManual) return;
+    const entry = manualEntries.find((item) => item.id === bar.id);
+    if (!entry) return;
+    const patched = barPatches[entry.id];
+    setManualEntries((prev) => [
+      ...prev,
+      validateManualEntry(
+        applyManualEntryPatch(
+          {
+            ...entry,
+            id: `manual-${Date.now()}`,
+            origin: "user-added",
+          },
+          {
+            startSec: patched?.startSec ?? entry.startSec + entry.durationSec,
+            durationSec: patched?.durationSec ?? entry.durationSec,
+            rowKey: (patched?.rowKey as SyncGridRowKey | undefined) ?? entry.rowKey,
+          }
+        )
+      ),
+    ]);
+    closeMatrixEditor();
+  }, [selectedSyncBar, manualEntries, barPatches]);
+
+  const handleEditBarDelete = useCallback(() => {
+    const bar = selectedSyncBar;
+    if (!bar) return;
+    if (bar.isManual) {
+      setManualEntries((prev) => prev.filter((item) => item.id !== bar.id));
+    } else {
+      const coaId = overlayCoaId;
+      if (!coaId) return;
+      updateMatrixOverlay(coaId, (prev) => ({
+        ...prev,
+        hiddenBarIds: prev.hiddenBarIds.includes(bar.id)
+          ? prev.hiddenBarIds
+          : [...prev.hiddenBarIds, bar.id],
+      }));
+    }
+    closeMatrixEditor();
+  }, [selectedSyncBar, overlayCoaId, updateMatrixOverlay]);
+
+  const handleEditBarMarkContingent = useCallback(() => {
+    const bar = selectedSyncBar;
+    if (!bar) return;
+    if (bar.isManual) {
+      const entry = manualEntries.find((item) => item.id === bar.id);
+      if (entry) {
+        handleManualEntryUpdate(validateManualEntry({ ...entry, status: "contingent" }));
+      }
+    } else {
+      handleBarPatch(bar.id, { status: "contingent" });
+    }
+    closeMatrixEditor();
+  }, [selectedSyncBar, manualEntries]);
+
+  const handleComposerPreviewFactIds = useCallback((ids: string[]) => {
+    setComposerPreviewFactIds(ids);
+  }, []);
+
+  const handleActionPreviewChange = useCallback(
+    (preview: { geojson: GeoJSON.FeatureCollection; statusLabel: string } | null) => {
+      setActionPreviewGeoJson(preview?.geojson ?? null);
+    },
+    []
+  );
+
+  const [timelineInstructionSeed, setTimelineInstructionSeed] = useState<string | undefined>();
+
+  const resolveEventTargetFactId = useCallback(
+    (event: MessageTrafficItem): string | undefined => {
+      if (event.factId) return event.factId;
+      const fromTimeline = resolveTimelineFactId(event, props.overviewTracks, props.mapFacts);
+      if (fromTimeline) return fromTimeline;
+      const actionMatch = event.id.match(/^action-(.+)$/);
+      if (actionMatch?.[1]) {
+        const action = props.topActions.find((item) => item.id === actionMatch[1]);
+        return action?.citedFacts?.[0];
+      }
+      return undefined;
+    },
+    [props.overviewTracks, props.mapFacts, props.topActions]
+  );
+
+  const handleTimelineEvent = useCallback(
+    (event: MessageTrafficItem, factId?: string) => {
+      const resolved = factId ?? resolveEventTargetFactId(event);
+
+      if (event.kind === "validation") {
+        setRightSidePanel("workflow");
+        props.setActiveView("trace");
+        return;
+      }
+
+      if (resolved) {
+        setTimelineInstructionSeed(undefined);
+        highlightTrackOnMap(resolved);
+        openMatrixComposer();
+        return;
+      }
+
+      if (event.kind === "ops") {
+        setTimelineInstructionSeed(event.text);
+        openMatrixComposer();
+      }
+    },
+    [resolveEventTargetFactId, openMatrixComposer, props.setActiveView, highlightTrackOnMap]
   );
 
   return (
-    <>
-      <ResizableLayout
-        left={leftPanel}
-        center={centerPanel}
-        right={rightPanel}
-        defaultLeft={300}
-        defaultRight={280}
+    <TaskComposerProvider
+      facts={props.mapFacts}
+      onFocusMapFact={highlightTrackOnMap}
+      onPreviewFactIdsChange={handleComposerPreviewFactIds}
+      onActionPreviewChange={handleActionPreviewChange}
+    >
+      <TaskComposerLifecycle resetNonce={composerResetNonce} pendingBar={pendingComposerBar} />
+    <ScenePickProvider
+      facts={props.mapFacts}
+      tracks={props.scenePickTracks}
+      matrixBars={visibleMatrixBars}
+      manualEntries={manualEntries}
+      knownAssets={props.knownAssets}
+      onFocusMapFact={highlightTrackOnMap}
+    >
+      <MapClickBridge onInspectFact={inspectSceneObject}>
+        {(onMapFactClick) => (
+    <div className={styles.decisionFlowPage}>
+      <WorkflowStepper
+        currentStep={workflowStepState.current}
+        completedSteps={workflowStepState.completed}
+        onStepSelect={handleWorkflowStepSelect}
       />
-      <ModelessWindow
-        title="Event Timeline"
-        open={windows.timeline.open}
-        minimized={windows.timeline.minimized}
-        onMinimizedChange={(minimized) => setMinimized("timeline", minimized)}
-        onClose={() => hideWindow("timeline")}
-        defaultPosition={{ x: 320, y: 120 }}
-        defaultWidth={680}
-        defaultHeight={360}
-        minWidth={400}
-        maxWidth={960}
-        zIndex={70}
-      >
-        <EventTimeline
-          items={props.reportWindowItems}
-          tracks={props.overviewTracks}
-          embedded
-          onFocusFact={(factId) => {
-            focusTrackOnMap(factId);
-            setTimelineHighlightFactId(factId);
-            showWindow("timeline");
-          }}
-          onEventNavigate={navigateFromEvent}
-          highlightFactId={timelineHighlightFactId}
-        />
-      </ModelessWindow>
-      <ModelessWindow
-        title="Show Orders"
-        open={windows.orders.open}
-        minimized={windows.orders.minimized}
-        onMinimizedChange={(minimized) => setMinimized("orders", minimized)}
-        onClose={() => hideWindow("orders")}
-        defaultPosition={{ x: 320, y: 460 }}
-        defaultWidth={420}
-        defaultHeight={280}
-        zIndex={71}
-      >
-        <ShowOrdersBody
-          orders={props.showOrders}
-          selectedOrderId={highlightedOrderId}
-          onSelectOrder={navigateFromOrder}
-        />
-      </ModelessWindow>
-      <ModelessWindow
-        title="COA Planning"
-        open={windows.coa.open}
-        minimized={windows.coa.minimized}
-        onMinimizedChange={(minimized) => setMinimized("coa", minimized)}
-        onClose={() => hideWindow("coa")}
-        defaultPosition={{ x: 880, y: 120 }}
-        defaultWidth={360}
-        defaultHeight={480}
-        minWidth={300}
-        zIndex={72}
-      >
-        <CoaPlanningBody
-          recommendation={recommendation}
-          selectedCoa={selectedCoa}
-          candidates={props.candidates}
-          selectedCoaId={props.selectedCoaId}
-          onSelectCoa={props.onSelectCoa}
-          onRunCoaEvaluation={props.onRunCoaEvaluation}
-          coaRunning={props.coaRunning}
-          commanderIntent={props.commanderIntent}
-          validatedDecisionPoints={props.validatedDecisionPoints}
-          onOpenCommanderMatrix={() => showWindow("commanderMatrix")}
-        />
-      </ModelessWindow>
-      <ModelessWindow
-        title="Commander's Matrix"
-        open={windows.commanderMatrix.open}
-        minimized={windows.commanderMatrix.minimized}
-        onMinimizedChange={(minimized) => setMinimized("commanderMatrix", minimized)}
-        onClose={() => hideWindow("commanderMatrix")}
-        defaultPosition={{ x: 520, y: 100 }}
-        defaultWidth={720}
-        defaultHeight={520}
-        minWidth={480}
-        zIndex={73}
-      >
-        <div className={styles.commanderMatrixWindow}>
-          <CommanderMatrixPopout
-            candidates={props.candidates}
-            selectedCoaId={props.selectedCoaId}
-            onSelectCoa={props.onSelectCoa}
-            commanderIntent={props.commanderIntent}
-            decisionPoints={props.validatedDecisionPoints}
-          />
-          <section className={styles.dashboardCard}>
-            <h3 className={styles.dashboardTitle}>
-              Logistics — {selectedCoa?.label ?? "no COA selected"}
-            </h3>
-            <div className={styles.logisticsMatrixHost}>
-              <LogisticsMatrix plan={props.displayedPlan} allowDemo />
+      <ResizableLayout
+        fillParent
+        className={styles.harpoonResizableLayout}
+        defaultLeft={300}
+        defaultRight={380}
+        minLeft={240}
+        minRight={280}
+        minCenter={420}
+        left={
+          <aside className={styles.harpoonTaskDock} aria-label="Matrix task panel">
+            <MatrixTaskPanel
+              key={selectedSyncBar?.id ?? "create"}
+              bar={selectedSyncBar ?? undefined}
+              target={authorTarget ?? undefined}
+              draft={composerDraft ?? undefined}
+              sceneSelectionFactId={sceneSelectionFactId}
+              instructionSeed={timelineInstructionSeed}
+              tickIntervalSec={syncTickIntervalSec}
+              horizonSec={syncHorizonSec}
+              onConfirm={handleConfirmManualEntry}
+              onCancel={selectedSyncBar ? closeMatrixEditor : handleCancelComposer}
+              onSaveEdit={selectedSyncBar ? handleEditBarSave : undefined}
+              onDuplicate={selectedSyncBar?.isManual ? handleEditBarDuplicate : undefined}
+              onDelete={selectedSyncBar ? handleEditBarDelete : undefined}
+              onMarkContingent={
+                selectedSyncBar ? handleEditBarMarkContingent : undefined
+              }
+            />
+          </aside>
+        }
+        center={
+          <aside className={styles.harpoonMapDock}>
+            <div className={styles.harpoonMapStackHost} ref={matrixSectionRef}>
+              <MapLogisticsStack
+              variant="harpoon"
+              logisticsStepNumber="04"
+              logisticsTitle="Synchronization Matrix"
+              logisticsDescription={
+                isProvisionalMatrix
+                  ? "No feasible executable plan yet. Provisional matrix shows parallel tasks by Main Effort, ISR, Security, and supporting rows."
+                  : selectedCoa
+                    ? `${selectedCoa.label} — parallel actions on the mission timeline, grouped by operational element.`
+                    : "Generate courses of action to auto-populate the synchronization matrix."
+              }
+              map={
+                <OperationalMapPanel
+                  embeddedInStack
+                  mapFacts={props.mapFacts}
+                  tracks={props.overviewTracks}
+                  selectedTrack={displayedSelectedTrack}
+                  focusFactId={focusFactId}
+                  focusNonce={focusNonce}
+                  highlightedFactIds={highlightedFactIds}
+                  actionPreview={mapActionPreview}
+                  onFactIconClick={onMapFactClick}
+                  onPinnedCoordUpdate={(factId, coord) => {
+                    if (factId === props.selectedOverviewTrack?.id) setLiveTrackCoord(coord);
+                  }}
+                  usingScenarioData={props.usingScenarioData}
+                />
+              }
+              displayedPlan={matrixPlan}
+              selectedCoaLabel={selectedCoa?.label}
+              provisional={isProvisionalMatrix}
+              emptyContext={logisticsEmptyContext}
+              manualEntries={manualEntries}
+              barPatches={barPatches}
+              hiddenBarIds={hiddenBarIds}
+              modifiedBarIds={modifiedBarIds}
+              selectedSyncBarId={selectedSyncBar?.id}
+              onSyncBarSelect={(bar) => {
+                setSelectedSyncBar(bar);
+                setPendingComposerBar(bar);
+                setComposerDraft(null);
+                setAuthorTarget(null);
+                if (bar.targetFactIds?.[0]) highlightTrackOnMap(bar.targetFactIds[0]);
+              }}
+              onBarPatch={handleBarPatch}
+              onManualEntryUpdate={handleManualEntryUpdate}
+              observedFacts={props.mapFacts}
+              onManualEntryDelete={(entryId) =>
+                setManualEntries((prev) => prev.filter((item) => item.id !== entryId))
+              }
+              onManualEntryDuplicate={(entry) =>
+                setManualEntries((prev) => [...prev, entry])
+              }
+              onSystemBarDelete={(barId) => {
+                const coaId = overlayCoaId;
+                if (!coaId) return;
+                updateMatrixOverlay(coaId, (prev) => ({
+                  ...prev,
+                  hiddenBarIds: prev.hiddenBarIds.includes(barId)
+                    ? prev.hiddenBarIds
+                    : [...prev.hiddenBarIds, barId],
+                }));
+              }}
+              commanderIntent={props.commanderIntent}
+              decisionPoints={syncDecisionPoints}
+              onAddTask={openMatrixComposer}
+              onCreateManualAtCell={handleCreateManualAtCell}
+              externalEditor
+              autoExpandRowKey={composerDraft?.rowKey}
+              executing={Boolean(executionMessage) || isPlaying}
+              executionPlaybackPhase={playbackStatus.phase === "idle" ? undefined : playbackStatus.phase}
+              executionActiveBarIds={
+                isPlaying ? activeExecutionTaskIds : undefined
+              }
+              executionCompletedBarIds={executionCompletedBarIds}
+              executionBanner={
+                <ExecutionFeedbackBanner status={playbackStatus} error={executeError} />
+              }
+              onValidate={handleMatrixValidate}
+              validationFeedback={matrixValidationFeedback ?? undefined}
+              onExecute={handleExecuteCoa}
+              canExecute={canClickExecute}
+              executeHint={
+                canClickExecute
+                  ? preparedExecution
+                    ? `Commit prepared revision ${preparedExecution.revisionId}`
+                    : "Prepare and commit the selected COA"
+                  : matrixExecuteBlocker
+              }
+              executeBlocker={matrixExecuteBlocker}
+              timeline={
+                <EventTimeline
+                  embedded
+                  items={timelineItems}
+                  tracks={props.overviewTracks}
+                  facts={props.mapFacts}
+                  highlightFactId={focusFactId}
+                  onFocusFact={highlightTrackOnMap}
+                  onEventNavigate={handleTimelineEvent}
+                />
+              }
+              timelineExpanded={Boolean(executedSnapshot) || executionEvents.length > 0}
+              defaultLowerRatio={0.34}
+              minLogisticsHeight={200}
+              minMapHeight={220}
+            />
             </div>
-          </section>
-        </div>
-      </ModelessWindow>
-    </>
+          </aside>
+        }
+        right={
+          <RightSideDock
+            panel={rightSidePanel}
+            onPanelChange={setRightSidePanel}
+            inspector={
+              <InspectorPanel
+                inspectedFactId={inspectedFactId}
+                fact={inspectedFact}
+                track={inspectedTrack}
+                onLocateFact={highlightTrackOnMap}
+              />
+            }
+            workflow={
+              <DecisionFlowPanel
+                summaryText={props.summaryText}
+                summaryTime={props.summaryTime}
+                phase={props.phase}
+                reportWindowItems={props.reportWindowItems}
+                focusFactId={focusFactId}
+                resolveEventTargetFactId={resolveEventTargetFactId}
+                onTimelineEvent={handleTimelineEvent}
+                candidates={props.candidates}
+                selectedCoaId={props.selectedCoaId}
+                onSelectCoa={props.onSelectCoa}
+                onRunCoaEvaluation={props.onRunCoaEvaluation}
+                onCreateOperatorCoa={props.onCreateOperatorCoa}
+                coaRunning={props.coaRunning}
+                coaPipelineStatus={props.coaPipelineStatus}
+                generationBlockerDetail={props.generationBlockerDetail}
+                generationError={props.generationError}
+                recommendation={recommendation}
+                matrixOverlay={matrixOverlay}
+                onForkOperatorModified={forkOperatorModified}
+                onValidateOperator={handleValidateOperator}
+                operatorValidationFeedback={operatorValidationFeedback ?? undefined}
+                onMergeOperatorIntoParent={mergeOperatorIntoParent}
+                onRebaseOperatorCoa={rebaseOperatorCoa}
+                onDiscardOperatorCoa={discardOperatorCoa}
+                onCreateImportedOperatorDraft={createImportedOperatorDraft}
+                canClickExecute={canClickExecute}
+                blockingExecute={blockingExecute}
+                executionMessage={executionMessage}
+                isPlaying={isPlaying}
+                playbackStatus={playbackStatus}
+                onExecuteCoa={handleExecuteCoa}
+                preparedExecution={preparedExecution}
+              />
+            }
+          />
+        }
+      />
+    </div>
+        )}
+      </MapClickBridge>
+    </ScenePickProvider>
+    </TaskComposerProvider>
   );
 }

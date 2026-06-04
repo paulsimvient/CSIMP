@@ -1,0 +1,68 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(2, 8, 18, 0.72);
+}
+
+.dialog {
+  width: min(420px, 100%);
+  border: 1px solid var(--border-accent);
+  border-radius: 12px;
+  background: var(--bg-card);
+  padding: 20px 22px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
+}
+
+.dialog h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  color: #e6f1ff;
+}
+
+.dialog p {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #9bb7d4;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.cancelBtn,
+.confirmBtn {
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.cancelBtn {
+  border: 1px solid var(--border-accent);
+  background: transparent;
+  color: #9bb7d4;
+}
+
+.cancelBtn:hover {
+  color: #e6f1ff;
+  border-color: #38bdf8;
+}
+
+.confirmBtn {
+  border: 1px solid rgba(255, 140, 90, 0.55);
+  background: rgba(180, 60, 30, 0.35);
+  color: #ffd0b0;
+}
+
+.confirmBtn:hover {
+  background: rgba(200, 70, 35, 0.5);
+}

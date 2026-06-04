@@ -1,23 +1,95 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cyberExecutionBadgeLabel } from "../executionMode";
 import { atomicRedTeamProvider } from "./atomic-red-team";
 
-describe("atomicRedTeamProvider", () => {
-  it("returns lab-executed results with atomic test traceability", async () => {
-    const result = await atomicRedTeamProvider({
-      coaId: "coa-lab-1",
-      validatedActionIds: ["ia_cyber"],
-      citedFactIds: ["fact_cyber_001"],
-      actionDescriptions: ["Investigate authentication anomalies"],
-      actionTypes: ["cyber"],
-      provider: "atomic-red-team",
-      humanApproved: true,
-      labEnvironmentConfirmed: true,
-    });
+const baseRequest = {
+  coaId: "coa-lab-1",
+  validatedActionIds: ["ia_cyber"],
+  citedFactIds: ["fact_cyber_001"],
+  actionDescriptions: ["Investigate authentication anomalies"],
+  actionTypes: ["cyber"],
+  provider: "atomic-red-team" as const,
+  humanApproved: true,
+  labEnvironmentConfirmed: true,
+};
 
-    expect(result.executionMode).toBe("lab-executed");
+describe("atomicRedTeamProvider", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_CYBER_LAB_HARNESS_URL", "");
+    vi.stubEnv("VITE_CYBER_ALLOW_IN_PROCESS_LAB", "true");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it("returns in-process-simulation when harness falls back in-process", async () => {
+    const result = await atomicRedTeamProvider(baseRequest);
+
+    expect(result.executionMode).toBe("in-process-simulation");
     expect(result.provider).toBe("atomic-red-team");
     expect(result.atomicTestsExecuted?.length).toBeGreaterThan(0);
     expect(result.evidenceRefs.some((r) => r.startsWith("atomic:"))).toBe(true);
-    expect(result.observedDetections.length).toBeGreaterThan(0);
+    expect(cyberExecutionBadgeLabel(result.executionMode)).not.toBe("LAB EXECUTED");
+  });
+
+  it("returns lab-unavailable when harness is unreachable and fallback disabled", async () => {
+    vi.stubEnv("VITE_CYBER_ALLOW_IN_PROCESS_LAB", "");
+
+    const result = await atomicRedTeamProvider(baseRequest);
+
+    expect(result.executionMode).toBe("lab-unavailable");
+    expect(cyberExecutionBadgeLabel(result.executionMode)).toBe("LAB UNAVAILABLE");
+    expect(cyberExecutionBadgeLabel(result.executionMode)).not.toBe("LAB EXECUTED");
+    expect(result.atomicTestsExecuted ?? []).toHaveLength(0);
+  });
+
+  it("returns lab-executed only after confirmed HTTP harness success", async () => {
+    vi.stubEnv("VITE_CYBER_LAB_HARNESS_URL", "http://lab-harness.test/run");
+    vi.stubEnv("VITE_CYBER_ALLOW_IN_PROCESS_LAB", "");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({
+          outcomes: [
+            {
+              testId: "T1003.001",
+              name: "LSASS Memory",
+              techniqueId: "T1003",
+              executed: true,
+              detectionObserved: true,
+              harness: "http",
+            },
+          ],
+        }),
+      }))
+    );
+
+    const result = await atomicRedTeamProvider(baseRequest);
+
+    expect(result.executionMode).toBe("lab-executed");
+    expect(cyberExecutionBadgeLabel(result.executionMode)).toBe("LAB EXECUTED");
+  });
+
+  it("returns lab-unavailable when HTTP harness fetch fails", async () => {
+    vi.stubEnv("VITE_CYBER_LAB_HARNESS_URL", "http://lab-harness.test/run");
+    vi.stubEnv("VITE_CYBER_ALLOW_IN_PROCESS_LAB", "");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("ECONNREFUSED");
+      })
+    );
+
+    const result = await atomicRedTeamProvider(baseRequest);
+
+    expect(result.executionMode).toBe("lab-unavailable");
+    expect(cyberExecutionBadgeLabel(result.executionMode)).not.toBe("LAB EXECUTED");
   });
 });

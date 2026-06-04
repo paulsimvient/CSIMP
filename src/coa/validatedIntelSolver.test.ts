@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { solveValidatedIntelBundles } from "./validatedIntelSolver";
+import { scheduleBundleActions, solveValidatedIntelBundles } from "./validatedIntelSolver";
 
 describe("solveValidatedIntelBundles", () => {
   it("returns multiple competing SAT bundles, not one mega-bundle", async () => {
@@ -44,5 +44,57 @@ describe("solveValidatedIntelBundles", () => {
     expect(sat.every((r) => r.constraintSatisfaction?.hard.some((h) => h.id === "hc-cited-facts"))).toBe(
       true
     );
+  });
+});
+
+
+describe("scheduleBundleActions", () => {
+  it("packs shared assets sequentially while allowing independent assets in parallel", () => {
+    const T0 = 1_000;
+    const result = scheduleBundleActions(
+      [
+        {
+          id: "routine-shared",
+          description: "Routine shared asset task",
+          citedFacts: ["fact-1"],
+          requiredAssets: ["team-a"],
+          timeSensitivity: "routine",
+          confidence: "medium",
+        },
+        {
+          id: "immediate-shared",
+          description: "Immediate shared asset task",
+          citedFacts: ["fact-2"],
+          requiredAssets: ["team-a"],
+          timeSensitivity: "immediate",
+          confidence: "high",
+        },
+        {
+          id: "immediate-independent",
+          description: "Immediate independent task",
+          citedFacts: ["fact-3"],
+          requiredAssets: ["team-b"],
+          timeSensitivity: "immediate",
+          confidence: "high",
+        },
+      ],
+      T0
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const actions = result.actions;
+
+    const sharedImmediate = actions.find((action) => action.id === "immediate-shared")!;
+    const independent = actions.find((action) => action.id === "immediate-independent")!;
+    const sharedRoutine = actions.find((action) => action.id === "routine-shared")!;
+
+    expect(sharedImmediate.startTime).toBe(T0);
+    expect(independent.startTime).toBe(T0);
+    expect(sharedRoutine.startTime).toBeGreaterThanOrEqual(
+      sharedImmediate.startTime + sharedImmediate.duration
+    );
+    expect(sharedImmediate.duration).toBe(10 * 60);
+    expect(sharedRoutine.duration).toBe(60 * 60);
   });
 });

@@ -7,7 +7,18 @@ export type CyberEmulationProvider =
   | "caldera"
   | "manual-assessment";
 
-export type CyberEmulationExecutionMode = "simulated" | "lab-executed";
+export type CyberEmulationExecutionMode =
+  | "simulation"
+  | "in-process-simulation"
+  | "lab-executed"
+  | "lab-unavailable";
+
+export class LabHarnessUnavailableError extends Error {
+  constructor(message = "External lab harness URL is not configured or unreachable.") {
+    super(message);
+    this.name = "LabHarnessUnavailableError";
+  }
+}
 
 export type AttckTechniqueRef = {
   techniqueId: string;

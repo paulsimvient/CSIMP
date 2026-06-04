@@ -1,4 +1,5 @@
 import type { CoaCandidate } from "./types";
+import { cyberExecutionBadgeLabel } from "./cyberEmulation/executionMode";
 
 /** Auditable matrix cell with provenance (commander matrix). */
 export type MatrixCellDerivation = {
@@ -63,7 +64,20 @@ export function buildMatrixDerivation(
       };
     }
     case "logistics":
-      return buildLogisticsMatrixDerivation(coa);
+      return {
+        value: `${Math.round(coa.scores.logistics * 100)}%`,
+        derivedFrom: [
+          "logisticsPlan.chips",
+          "logisticsPlan.lanes",
+          "scores.logistics",
+        ],
+        explanation:
+          coa.logisticsPlan.kind === "populated"
+            ? `Plan has ${coa.logisticsPlan.chips.length} logistics chip(s) across ${coa.logisticsPlan.lanes.length} lane(s).`
+            : coa.status === "unsat"
+              ? "No feasible logistics plan — solver marked COA infeasible."
+              : "Logistics plan not populated for this candidate.",
+      };
     case "feasibility":
       return {
         value: `${Math.round(coa.scores.feasibility * 100)}%`,
@@ -93,7 +107,7 @@ export function buildMatrixDerivation(
             : ["scores.effects"],
         explanation:
           coa.effects?.cyberEffects
-            ? `${coa.effects.explanation} [${coa.effects.cyberEffects.executionMode === "simulated" ? "SIMULATED" : "LAB"} cyber-effects via ${coa.effects.cyberEffects.provider}]`
+            ? `${coa.effects.explanation} [${cyberExecutionBadgeLabel(coa.effects.cyberEffects.executionMode)} cyber-effects via ${coa.effects.cyberEffects.provider}]`
             : coa.effects?.explanation ??
               "Effects engine has not annotated this candidate yet.",
       };
@@ -122,66 +136,6 @@ export function buildMatrixDerivation(
     default:
       return { value: "—", derivedFrom: [], explanation: "" };
   }
-}
-
-export function buildLogisticsMatrixDerivation(coa: CoaCandidate): MatrixCellDerivation {
-  const value = `${Math.round(coa.scores.logistics * 100)}%`;
-
-  if (coa.logisticsPlan.kind !== "populated") {
-    return {
-      value,
-      derivedFrom: ["scores.logistics", "logisticsPlan.kind"],
-      explanation:
-        coa.status === "unsat"
-          ? "No feasible logistics plan — solver marked COA infeasible."
-          : "Logistics plan not populated for this candidate.",
-    };
-  }
-
-  const plan = coa.logisticsPlan;
-  const factIds = [
-    ...new Set(
-      plan.chips.flatMap((chip) => chip.linkedFactIds ?? chip.citedFactIds ?? [])
-    ),
-  ];
-  const dependencyCount = plan.chips.reduce(
-    (sum, chip) => sum + chip.dependencies.length,
-    0
-  );
-  const laneNames = plan.lanes.map((lane) => lane.label);
-  const laneSummary =
-    laneNames.length > 0
-      ? plan.lanes
-          .map((lane) => {
-            const chipCount = lane.chipIds.length;
-            return `${lane.label} (${chipCount} chip${chipCount === 1 ? "" : "s"})`;
-          })
-          .join("; ")
-      : "none";
-
-  const derivedFrom = [
-    ...plan.chips.map((chip) => chip.id),
-    ...plan.lanes.map((lane) => lane.id),
-    ...factIds.map((id) => `fact:${id}`),
-    "scores.logistics",
-  ];
-
-  const actionLabels = plan.chips
-    .slice(0, 4)
-    .map((chip) => chip.label)
-    .join("; ");
-
-  return {
-    value,
-    derivedFrom,
-    explanation: [
-      `Plan uses lanes: ${laneSummary}.`,
-      `${plan.chips.length} action chip(s) across ${plan.lanes.length} lane(s)${actionLabels ? ` — ${actionLabels}${plan.chips.length > 4 ? "…" : ""}` : ""}.`,
-      `Facts: ${factIds.length > 0 ? factIds.join(", ") : "none"}.`,
-      `Dependencies: ${dependencyCount}.`,
-      `Timeline span: ${Math.round(plan.totalDuration)}s.`,
-    ].join(" "),
-  };
 }
 
 function constraintSummary(coa: CoaCandidate, satisfied: boolean): string {
