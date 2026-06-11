@@ -14,6 +14,15 @@ import {
 import { llmInterpreter } from "./interpreter";
 import { buildScenarioPacket } from "./scenarioPacket";
 import type { InterpreterFn } from "./interpreter";
+import {
+  constraintsFromBundle,
+  fetchProductionAgentBundle,
+  groundingConfigFromBundle,
+  mergeConstraints,
+} from "./groundingPolicy";
+import { buildAgentRuntimeProvenance } from "./runtimeIdentity";
+import { classifyMissionEnvelope } from "./missionEnvelope";
+import { fetchProductionBundleForEnvelope } from "./envelopeRouter";
 import type {
   AuthorityState,
   IntelState,
@@ -45,6 +54,8 @@ type RunIntelPipelineInput = {
   constraints?: string[];
   includeLowConfidence?: boolean;
   interpreter?: InterpreterFn;
+  /** Override production agent; defaults to registry production version. */
+  agentId?: string;
 };
 
 export async function runIntelPipeline(
@@ -84,11 +95,59 @@ export async function runIntelPipeline(
     ],
     includeLowConfidence = false,
     interpreter = llmInterpreter,
+    agentId = "intel-interpreter",
   } = input;
 
-  // Step 1 — build bounded scenario packet
+  const agentBundleDefault = await fetchProductionAgentBundle(agentId);
+  const registryConstraints = agentBundleDefault ? constraintsFromBundle(agentBundleDefault) : [];
+  const mergedConstraints = mergeConstraints(constraints, registryConstraints);
+
+  // Step 1 — build bounded scenario packet (preliminary for envelope classification)
+  const preliminary = buildScenarioPacket(
+    {
+      commanderIntent,
+      facts,
+      knownAssets,
+      knownAuthorities,
+      constraints: mergedConstraints,
+      agentSystemPrompt: agentBundleDefault?.systemPrompt,
+      agentOutputSchema: agentBundleDefault?.outputSchema,
+      agentId: agentBundleDefault?.agentId,
+      agentVersion: agentBundleDefault?.version,
+      moduleEntrypoint: agentBundleDefault?.moduleEntrypoint,
+    },
+    { includeLowConfidence }
+  );
+
+  const envelopeClass = classifyMissionEnvelope(preliminary.packet).envelopeClass;
+  let envelopeRouted = false;
+  let agentBundle = agentBundleDefault;
+
+  const envelopeFetch = await fetchProductionBundleForEnvelope(agentId, envelopeClass);
+  if (envelopeFetch.bundle) {
+    agentBundle = envelopeFetch.bundle as typeof agentBundleDefault;
+    envelopeRouted = envelopeFetch.route?.routed ?? false;
+  }
+
+  const registryConstraintsFinal = agentBundle ? constraintsFromBundle(agentBundle) : [];
+  const groundingPolicy = agentBundle
+    ? groundingConfigFromBundle(agentBundle)
+    : undefined;
+  const mergedConstraintsFinal = mergeConstraints(constraints, registryConstraintsFinal);
+
   const { packet, excludedFacts } = buildScenarioPacket(
-    { commanderIntent, facts, knownAssets, knownAuthorities, constraints },
+    {
+      commanderIntent,
+      facts,
+      knownAssets,
+      knownAuthorities,
+      constraints: mergedConstraintsFinal,
+      agentSystemPrompt: agentBundle?.systemPrompt,
+      agentOutputSchema: agentBundle?.outputSchema,
+      agentId: agentBundle?.agentId,
+      agentVersion: agentBundle?.version,
+      moduleEntrypoint: agentBundle?.moduleEntrypoint,
+    },
     { includeLowConfidence }
   );
 
@@ -105,13 +164,17 @@ export async function runIntelPipeline(
   try {
     const interpreted = await interpreter(packet);
     rawInterpretation = interpreted.interpretation;
-    rawModelText = interpreted.rawModelText;
+    rawModelText = RETAIN_RAW_MODEL_TEXT ? interpreted.rawModelText : undefined;
   } catch (err) {
     return intelErrorState(facts, packet, err);
   }
 
   // Step 3 — grounding validation (deterministic — no LLM involved)
-  const groundingResult = validateGrounding(packet, rawInterpretation);
+  const groundingResult = validateGrounding(
+    packet,
+    rawInterpretation,
+    groundingPolicy
+  );
 
   if (import.meta.env.DEV) {
     console.info("[intel] Grounding report:\n" + formatGroundingReport(groundingResult));
@@ -134,6 +197,21 @@ export async function runIntelPipeline(
     groundingResult,
     validatedActions,
     validatedDecisionPoints,
+    ...(agentBundle
+      ? {
+          agentRuntime: {
+            ...buildAgentRuntimeProvenance({
+              agentId: agentBundle.agentId,
+              agentVersion: agentBundle.version,
+              releaseId: agentBundle.releaseId,
+              packet,
+              interpretation: rawInterpretation,
+            }),
+            envelopeClass,
+            envelopeRouted,
+          },
+        }
+      : {}),
   };
 }
 
@@ -151,7 +229,8 @@ const INITIAL_INTEL_STATE: IntelState = {
   validatedDecisionPoints: [],
 };
 const INTEL_SQL_KEY = "intel_state";
-const AUTO_HYDRATE_FROM_SQL = false;
+const RETAIN_RAW_MODEL_TEXT =
+  import.meta.env.VITE_INTEL_RETAIN_RAW_MODEL_TEXT === "true";
 
 export const useIntelStore = create<IntelStore>()((set) => ({
   ...INITIAL_INTEL_STATE,
@@ -224,6 +303,10 @@ export function useResetIntel() {
   return useIntelStore((s) => s.reset);
 }
 
+export function useAgentRuntime() {
+  return useIntelStore((s) => s.agentRuntime);
+}
+
 // ─── Internal utilities ───────────────────────────────────────────────────────
 
 function intelErrorState(
@@ -256,16 +339,19 @@ function sanitizeHydratedIntelState(state: IntelState): IntelState {
   };
 }
 
+function snapshotIntelStateForPersist(state: IntelState): IntelState {
+  if (RETAIN_RAW_MODEL_TEXT) return state;
+  const { rawModelText: _rawModelText, ...rest } = state;
+  return rest;
+}
+
 async function persistIntelState(state: IntelState): Promise<void> {
-  await saveSqlSnapshot(INTEL_SQL_KEY, state);
+  await saveSqlSnapshot(INTEL_SQL_KEY, snapshotIntelStateForPersist(state));
 }
 
-async function hydrateIntelState(): Promise<void> {
+export async function hydrateIntelState(): Promise<boolean> {
   const snapshot = await loadSqlSnapshot<IntelState>(INTEL_SQL_KEY);
-  if (!snapshot) return;
+  if (!snapshot) return false;
   useIntelStore.setState(sanitizeHydratedIntelState(snapshot));
-}
-
-if (AUTO_HYDRATE_FROM_SQL) {
-  void hydrateIntelState();
+  return true;
 }

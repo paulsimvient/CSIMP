@@ -190,3 +190,106 @@
   padding: 0;
   background: transparent;
 }
+
+.inspectorEventHint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: #8fa8c3;
+  line-height: 1.45;
+}
+
+.inspectorEventActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.assetTableWrap {
+  overflow-x: auto;
+}
+
+.assetTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.assetTable th {
+  text-align: left;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-header-muted);
+  font-weight: 600;
+  padding: 0 6px 6px 0;
+  border-bottom: 1px solid var(--border-accent);
+}
+
+.assetTable td {
+  padding: 7px 6px 7px 0;
+  vertical-align: top;
+  color: var(--text-header);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  line-height: 1.35;
+}
+
+.assetName {
+  display: block;
+}
+
+.assetKindHint {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 9px;
+  color: var(--text-header-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.assetStatusAvailable,
+.assetStatusAssigned,
+.assetStatusActive,
+.assetStatusComplete {
+  display: inline-block;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.assetStatusAvailable {
+  color: #8fa8c3;
+  border-color: rgba(143, 168, 195, 0.25);
+}
+
+.assetStatusAssigned {
+  color: #93c5fd;
+  border-color: rgba(147, 197, 253, 0.25);
+}
+
+.assetStatusActive {
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.assetStatusComplete {
+  color: #86efac;
+  border-color: rgba(134, 239, 172, 0.25);
+}
+
+.assetTaskLink {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #93c5fd;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.assetTaskLink:hover {
+  color: #bfdbfe;
+  text-decoration: underline;
+}

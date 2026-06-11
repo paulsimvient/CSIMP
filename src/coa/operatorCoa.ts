@@ -81,6 +81,16 @@ export function withOverlayRevision(overlay: MatrixOverlay): MatrixOverlay {
   return { ...overlay, revisionId: computeOverlayRevisionId(overlay) };
 }
 
+/** Manual tasks are baked into logistics on validate — drop overlay copies to avoid duplicate bars. */
+export function overlayAfterSuccessfulMaterialization(
+  overlay: MatrixOverlay
+): MatrixOverlay {
+  return withOverlayRevision({
+    ...overlay,
+    manualEntries: [],
+  });
+}
+
 export function getMatrixOverlay(
   state: CoaState,
   coaId: CoaId | undefined
@@ -232,29 +242,28 @@ export function candidateBadgeLabel(
   candidate: CoaCandidate,
   selected: boolean
 ): string {
-  if (candidate.status === "validating") return "VALIDATING…";
+  if (candidate.status === "validating") return "Validating";
   const origin = coaOrigin(candidate);
   if (selected && candidate.validationStatus === "validated" && candidate.status === "sat") {
-    if (origin === "automated") return "AUTOMATED · VALIDATED · ORDERS LOADED";
-    return "SELECTED · ORDERS LOADED";
+    return "Selected";
   }
   if (origin === "automated") {
-    return candidate.status === "sat" ? "AUTOMATED · FEASIBLE" : candidate.status.toUpperCase();
+    return candidate.status === "sat" ? "Feasible" : candidate.status.toUpperCase();
   }
   if (origin === "operator-authored") {
-    if (candidate.status === "draft") return "OPERATOR · DRAFT";
-    if (candidate.validationStatus === "validated") return "OPERATOR · VALIDATED";
-    return "OPERATOR · INCOMPLETE";
+    if (candidate.status === "draft") return "Draft";
+    if (candidate.validationStatus === "validated") return "Validated";
+    return "Incomplete";
   }
   if (origin === "imported") {
-    if (candidate.status === "draft") return "IMPORTED · DRAFT";
-    if (candidate.validationStatus === "validated") return "IMPORTED · VALIDATED";
-    return "IMPORTED · INCOMPLETE";
+    if (candidate.status === "draft") return "Draft";
+    if (candidate.validationStatus === "validated") return "Validated";
+    return "Incomplete";
   }
   if (origin === "operator-modified") {
-    if (candidate.validationStatus === "stale") return "OPERATOR MOD · STALE";
-    if (candidate.validationStatus === "validated") return "OPERATOR MOD · VALIDATED";
-    return "OPERATOR MOD · REVALIDATION REQUIRED";
+    if (candidate.validationStatus === "stale") return "Stale";
+    if (candidate.validationStatus === "validated") return "Validated";
+    return "Revalidate";
   }
   return feasibilityLabel(candidate.status);
 }

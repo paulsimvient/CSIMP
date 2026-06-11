@@ -123,10 +123,79 @@ export function parseMatrixTickToSec(label: string): number | undefined {
   return undefined;
 }
 
-/** Mission timeline labels in minutes (H+MM) for NL task text and legacy editors. */
+/** Mission timeline labels in minutes (H+MM) from mission start. */
 export function formatMissionTick(offsetSec: number): string {
   const totalMinutes = Math.max(0, Math.round(offsetSec / SEC_PER_MINUTE));
   return `H+${String(totalMinutes).padStart(2, "0")}`;
+}
+
+/**
+ * Mission labels relative to current simulation time (NOW).
+ * At the origin, H+00 is always the live playhead; future columns count up, past count down.
+ */
+export function formatRelativeMissionTick(offsetSec: number, originSec: number): string {
+  const deltaMin = Math.round((offsetSec - originSec) / SEC_PER_MINUTE);
+  if (deltaMin === 0) return "H+00";
+  const sign = deltaMin > 0 ? "+" : "-";
+  return `H${sign}${String(Math.abs(deltaMin)).padStart(2, "0")}`;
+}
+
+/** Axis label: absolute from mission start, or relative to sim NOW when origin is set. */
+export function formatMissionAxisTick(offsetSec: number, originSec?: number): string {
+  if (originSec != null && Number.isFinite(originSec)) {
+    return formatRelativeMissionTick(offsetSec, originSec);
+  }
+  return formatMissionTick(offsetSec);
+}
+
+/** Column index (0-based) whose header should read H+00 for the current playhead. */
+export function resolveNowColumnIndex(
+  playheadSec: number,
+  tickIntervalSec: number,
+  columnCount: number
+): number {
+  if (columnCount <= 0 || tickIntervalSec <= 0) return 0;
+  const raw = Math.floor(Math.max(0, playheadSec) / tickIntervalSec);
+  return Math.min(columnCount - 1, Math.max(0, raw));
+}
+
+/** Position of playhead within its H+00 column (0 = column start, 1 = next column). */
+export function playheadWithinColumnRatio(
+  playheadSec: number,
+  columnIndex: number,
+  tickIntervalSec: number
+): number {
+  if (tickIntervalSec <= 0) return 0;
+  const columnStartSec = columnIndex * tickIntervalSec;
+  return Math.min(1, Math.max(0, (playheadSec - columnStartSec) / tickIntervalSec));
+}
+
+/** Grid-aligned relative header labels — H+00 always on the playhead column. */
+export function formatRelativeColumnTick(
+  columnIndex: number,
+  nowColumnIndex: number,
+  tickIntervalSec: number
+): string {
+  const stepMin = Math.max(1, Math.round(tickIntervalSec / SEC_PER_MINUTE));
+  const deltaMin = (columnIndex - nowColumnIndex) * stepMin;
+  if (deltaMin === 0) return "H+00";
+  const sign = deltaMin > 0 ? "+" : "-";
+  return `H${sign}${String(Math.abs(deltaMin)).padStart(2, "0")}`;
+}
+
+/** Map mission seconds to horizontal position on the matrix timeline. */
+export function missionSecToTimelineRatio(sec: number, horizonSec: number): number {
+  if (horizonSec <= 0) return 0;
+  return Math.min(1, Math.max(0, sec / horizonSec));
+}
+
+/** Map column index to horizontal position at the column's leading edge. */
+export function columnIndexToTimelineRatio(
+  columnIndex: number,
+  tickIntervalSec: number,
+  horizonSec: number
+): number {
+  return missionSecToTimelineRatio(columnIndex * tickIntervalSec, horizonSec);
 }
 
 /**

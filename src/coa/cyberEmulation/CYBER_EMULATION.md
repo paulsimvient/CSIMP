@@ -30,7 +30,7 @@ Each provider returns a `CyberEffectResult`: residual risk, confidence, techniqu
 - No LLM-to-execution path (adapter only called from `defaultEffectsEngine`)
 - Human approval required before non-simulated runs
 - Every run tied to `coaId`, validated action IDs, and cited fact IDs
-- UI distinguishes **simulated** vs **lab-executed** results
+- UI distinguishes **simulated**, **in-process simulation**, **lab executed**, and **lab unavailable** results
 
 ## Phase 2 usage
 
@@ -39,7 +39,20 @@ Each provider returns a `CyberEffectResult`: residual risk, confidence, techniqu
 3. Confirm lab environment and human approval, then **Re-score COAs with lab validation**.
 4. Results show **LAB EXECUTED** with per-test detection lines (`atomic:…` evidence refs).
 
-Optional: set `VITE_CYBER_LAB_HARNESS_URL` to POST validated test IDs to an external lab executor; the app falls back to the in-process executor if unreachable.
+### Lab harness configuration
+
+Recommended (dev/preview): route through the Vite server proxy so the browser never calls an arbitrary external URL directly.
+
+```bash
+VITE_CYBER_LAB_USE_SERVER_PROXY=true
+CYBER_LAB_HARNESS_URL=http://localhost:8090/lab/atomic   # server-side only
+```
+
+The proxy validates harness responses (schema, requested test IDs, technique IDs, no extras/duplicates) and enforces timeouts and response size limits.
+
+Direct client URL (legacy): set `VITE_CYBER_LAB_HARNESS_URL` — the client applies the same fail-closed validation before accepting **LAB EXECUTED**.
+
+If the harness is unreachable and `VITE_CYBER_ALLOW_IN_PROCESS_LAB` is not set, results are **LAB UNAVAILABLE** (never mislabeled as lab executed).
 
 ## Enabling Phase 3
 

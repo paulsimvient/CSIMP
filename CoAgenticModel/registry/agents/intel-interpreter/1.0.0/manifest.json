@@ -1,0 +1,20 @@
+{
+  "id": "intel-interpreter",
+  "version": "1.0.0",
+  "role": "intel-interpreter",
+  "entrypoint": "prompts/system.md",
+  "moduleEntrypoint": "src/agents/intelInterpreter/index.ts",
+  "allowedTools": ["read-scenario-packet", "emit-interpretation-json"],
+  "inputSchema": "schemas/scenario-packet.json",
+  "outputSchema": "schemas/llm-interpretation.json",
+  "policyBundle": [
+    "policies/attribution.json",
+    "policies/grounding.json"
+  ],
+  "regressionSuite": "suites/regression.json",
+  "resourceLimits": {
+    "timeoutMs": 60000,
+    "maxTokens": 8192,
+    "maxToolCalls": 0
+  }
+}

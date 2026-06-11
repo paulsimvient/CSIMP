@@ -3631,19 +3631,20 @@
 .flowRailStep span, .flowNumber { color: #38bdf8; font-size: 11px; font-weight: 800; letter-spacing: .08em; }
 .flowRailStep strong { font-size: 12px; }
 
-.flowStepCard { padding: 16px; }
-.flowStepHeader { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.flowStepCard { padding: 12px 14px; }
+.flowStepHeader { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .flowStepHeader > div { flex: 1; }
-.flowStepHeader h2 { margin: 0; color: #f0f7ff; font-size: 17px; }
+.flowStepHeader h2 { margin: 0; flex: 1; color: #f0f7ff; font-size: 15px; font-weight: 600; }
 .flowStepHeader p { margin: 3px 0 0; color: #8fa8c3; font-size: 12px; }
 .flowNumber { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid #2f6f9c; border-radius: 50%; background: rgba(56,189,248,.08); }
 
 .eventSummaryGrid { display: grid; grid-template-columns: minmax(220px, .9fr) minmax(0, 1.4fr); gap: 12px; }
-.eventPrimary, .recommendationPanel, .flowEmpty, .executionHint, .executionStatus { border: 1px solid var(--border-accent); border-radius: 9px; background: var(--bg-card); padding: 14px; }
-.eventPrimary { display: flex; flex-direction: column; gap: 7px; }
+.eventPrimary, .recommendationPanel, .flowEmpty, .executionHint, .executionStatus { border: 1px solid var(--border-accent); border-radius: 9px; background: var(--bg-card); padding: 10px 12px; }
+.eventPrimary { display: flex; flex-direction: column; gap: 4px; }
 .eventPrimary span, .recommendationPanel span { color: #38bdf8; font-size: 10px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.eventPrimary strong, .recommendationPanel strong { color: #e6f1ff; line-height: 1.5; }
-.eventPrimary small { color: #8fa8c3; }
+.eventPrimary strong, .recommendationPanel strong { color: #e6f1ff; line-height: 1.4; font-size: 13px; }
+.eventPrimary small { color: #8fa8c3; font-size: 11px; }
+.flowMutedLine { margin: 0; color: #8fa8c3; font-size: 12px; }
 .flowBlockedNote {
   margin: 10px 0 0;
   color: #ffb4a6;
@@ -3964,10 +3965,10 @@
   to { background-position: 0 0; }
 }
 .eventFeed { display: flex; flex-direction: column; gap: 6px; }
-.eventFeedRow { display: grid; grid-template-columns: 58px 82px 1fr; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #17304a; color: #9bb7d4; font-size: 12px; }
-.eventFeedRow span { color: #6f94bc; font-family: "SF Mono", monospace; }
-.eventFeedRow strong { color: #38bdf8; font-size: 10px; }
-.eventFeedRow p { margin: 0; }
+.eventFeedRow { display: grid; grid-template-columns: 46px 52px 1fr; gap: 6px; padding: 6px 8px; border-bottom: 1px solid #17304a; color: #9bb7d4; font-size: 11px; }
+.eventFeedRow span { color: #6f94bc; font-family: "SF Mono", monospace; font-size: 10px; }
+.eventFeedRow strong { color: #38bdf8; font-size: 9px; letter-spacing: .04em; }
+.eventFeedRow p { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .eventFeedRowButton {
   width: 100%;
   text-align: left;
@@ -4042,13 +4043,81 @@
 .actionPills span { border: 1px solid #2f587d; border-radius: 999px; background: var(--bg-button); color: #b8d5f4; padding: 5px 9px; font-size: 11px; letter-spacing: 0; text-transform: none; }
 
 .flowCoaGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-.flowCoaCard, .flowCoaCardActive { border: 1px solid var(--border-accent); border-radius: 9px; background: var(--bg-card); color: #e6f1ff; padding: 12px; text-align: left; cursor: pointer; }
+.flowCoaCardWrap {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-accent);
+  border-radius: 9px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.flowCoaCardWrapActive {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56,189,248,.14);
+  background: var(--bg-elevated);
+}
+.flowCoaSelect {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: #e6f1ff;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.flowCoaSelect:disabled { opacity: .58; cursor: not-allowed; }
+.flowCoaSelect > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.flowCoaDelete {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  border: none;
+  border-left: 1px solid var(--border-accent);
+  background: transparent;
+  color: #6f94bc;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 10px 12px;
+}
+.flowCoaDelete:hover {
+  color: #ffb4a6;
+  background: rgba(255,107,107,.1);
+}
+.flowCoaDeleteConfirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-left: 1px solid var(--border-accent);
+  background: rgba(255,107,107,.08);
+}
+.flowCoaDeleteConfirmYes,
+.flowCoaDeleteConfirmNo {
+  border: 1px solid #2f587d;
+  border-radius: 6px;
+  background: var(--bg-button);
+  color: #b8d5f4;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 5px 8px;
+}
+.flowCoaDeleteConfirmYes {
+  border-color: rgba(255,107,107,.45);
+  color: #ffb4a6;
+}
+.flowCoaCard, .flowCoaCardActive { border: 1px solid var(--border-accent); border-radius: 9px; background: var(--bg-card); color: #e6f1ff; padding: 10px 12px; text-align: left; cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
 .flowCoaCardActive { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,.14); background: var(--bg-elevated); }
 .flowCoaCard:disabled { opacity: .58; cursor: not-allowed; }
 .flowCoaCard:disabled:hover { border-color: var(--border-accent); }
 .flowCoaCard > div, .flowCoaCardActive > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.flowCoaCard p, .flowCoaCardActive p { color: #9bb7d4; font-size: 12px; line-height: 1.45; min-height: 50px; }
-.flowCoaCard small, .flowCoaCardActive small { color: #6f94bc; }
+.flowCoaSelect small, .flowCoaCard small, .flowCoaCardActive small { color: #6f94bc; }
+.flowCoaMeta { color: #6f94bc; font-size: 11px; }
+.flowCoaBlocker { color: #ffb4a6; font-size: 11px; }
 .flowBadgeReady, .flowBadgeBlocked { border-radius: 999px; padding: 3px 7px; font-size: 9px; font-weight: 800; letter-spacing: .06em; }
 .flowBadgeReady { color: #7ee787; background: rgba(64,192,87,.12); }
 .flowBadgeBlocked { color: #ffb4a6; background: rgba(255,107,107,.12); }
@@ -4217,6 +4286,72 @@
 
 .harpoonMapStack .opsLogisticsDock {
   min-height: 110px;
+}
+
+.opsLogisticsDockHarpoon {
+  padding: 6px;
+  border-radius: 8px;
+  gap: 0;
+}
+
+.opsLowerDockHarpoon {
+  gap: 0;
+}
+
+.stackSectionToolbarCompact {
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.stackSectionToolbarCompact strong {
+  font-size: 11px;
+}
+
+.executionBannerSlot {
+  flex-shrink: 0;
+  padding: 0 4px;
+}
+
+.executionBannerActiveCompact,
+.executionBannerSuccessCompact,
+.executionBannerErrorCompact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executionBannerActiveCompact {
+  border: 1px solid rgba(126, 231, 135, 0.45);
+  background: rgba(31, 157, 104, 0.14);
+  color: #c8f5d2;
+}
+
+.executionBannerSuccessCompact {
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  background: rgba(56, 189, 248, 0.1);
+  color: #cfefff;
+}
+
+.executionBannerErrorCompact {
+  border: 1px solid rgba(255, 140, 90, 0.45);
+  background: rgba(255, 140, 90, 0.1);
+  color: #ffd0b0;
+}
+
+.executionBannerActiveCompact strong,
+.executionBannerSuccessCompact strong,
+.executionBannerErrorCompact strong {
+  margin-right: 4px;
+}
+
+.executionBannerActiveCompact .executionBannerPulse {
+  margin-top: 0;
+  flex-shrink: 0;
 }
 
 .stackSectionToolbar {

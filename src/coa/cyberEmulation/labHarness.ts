@@ -1,6 +1,13 @@
 import type { AtomicLabTest } from "./atomicCatalog";
 import type { DetectionExpectation } from "./types";
 import { LabHarnessUnavailableError } from "./types";
+import {
+  LabHarnessValidationError,
+  LAB_HARNESS_MAX_RESPONSE_BYTES,
+  LAB_HARNESS_TIMEOUT_MS,
+  readJsonWithByteLimit,
+  validateHarnessResponse,
+} from "./labHarnessValidation";
 
 export type LabHarnessRequest = {
   coaId: string;
@@ -29,22 +36,36 @@ export type LabHarnessOptions = {
   allowInProcess?: boolean;
 };
 
+const DEFAULT_PROXY_PATH = "/api/cyber-lab";
+
 function allowInProcessFallback(options?: LabHarnessOptions): boolean {
   if (options?.allowInProcess) return true;
   return import.meta.env.VITE_CYBER_ALLOW_IN_PROCESS_LAB === "true";
 }
 
+function resolveHarnessUrl(): string | undefined {
+  const configured = import.meta.env.VITE_CYBER_LAB_HARNESS_URL as string | undefined;
+  if (configured && configured.trim() !== "") {
+    return configured.trim();
+  }
+  if (import.meta.env.VITE_CYBER_LAB_USE_SERVER_PROXY === "true") {
+    return DEFAULT_PROXY_PATH;
+  }
+  return undefined;
+}
+
 /**
  * Executes allowlisted atomic validation checks against the lab harness.
- * Requires VITE_CYBER_LAB_HARNESS_URL unless an explicit in-process fallback is allowed.
+ * Requires VITE_CYBER_LAB_HARNESS_URL or VITE_CYBER_LAB_USE_SERVER_PROXY unless
+ * an explicit in-process fallback is allowed.
  */
 export async function executeLabAtomicTests(
   request: LabHarnessRequest,
   options?: LabHarnessOptions
 ): Promise<LabHarnessResult> {
-  const url = import.meta.env.VITE_CYBER_LAB_HARNESS_URL as string | undefined;
-  if (url && url.trim() !== "") {
-    return executeViaHttpHarness(url.trim(), request);
+  const url = resolveHarnessUrl();
+  if (url) {
+    return executeViaHttpHarness(url, request);
   }
 
   if (allowInProcessFallback(options)) {
@@ -52,7 +73,7 @@ export async function executeLabAtomicTests(
   }
 
   throw new LabHarnessUnavailableError(
-    "Lab harness URL is not configured. Set VITE_CYBER_LAB_HARNESS_URL or use simulated cyber mode."
+    "Lab harness URL is not configured. Set VITE_CYBER_LAB_HARNESS_URL, enable VITE_CYBER_LAB_USE_SERVER_PROXY, or use simulated cyber mode."
   );
 }
 
@@ -60,6 +81,9 @@ async function executeViaHttpHarness(
   url: string,
   request: LabHarnessRequest
 ): Promise<LabHarnessResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LAB_HARNESS_TIMEOUT_MS);
+
   let response: Response;
   try {
     response = await fetch(url, {
@@ -70,13 +94,22 @@ async function executeViaHttpHarness(
         citedFactIds: request.citedFactIds,
         validatedActionIds: request.validatedActionIds,
         testIds: request.tests.map((t) => t.testId),
+        tests: request.tests,
       }),
+      signal: controller.signal,
     });
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail =
+      err instanceof Error && err.name === "AbortError"
+        ? "request timed out"
+        : err instanceof Error
+          ? err.message
+          : String(err);
     throw new LabHarnessUnavailableError(
       `External lab harness unreachable at ${url}: ${detail}`
     );
+  } finally {
+    clearTimeout(timeout);
   }
 
   if (!response.ok) {
@@ -85,35 +118,51 @@ async function executeViaHttpHarness(
     );
   }
 
-  const payload = (await response.json()) as {
-    outcomes?: LabHarnessTestOutcome[];
-  };
-
-  if (!Array.isArray(payload.outcomes) || payload.outcomes.length === 0) {
-    throw new LabHarnessUnavailableError("Lab harness returned no outcomes");
+  let payload: unknown;
+  try {
+    payload = await readJsonWithByteLimit(response, LAB_HARNESS_MAX_RESPONSE_BYTES);
+  } catch (err) {
+    const detail =
+      err instanceof LabHarnessValidationError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    throw new LabHarnessUnavailableError(detail);
   }
 
-  return buildHarnessResult(request.tests, payload.outcomes, "http");
+  let outcomes: LabHarnessTestOutcome[];
+  try {
+    outcomes = validateHarnessResponse(request.tests, payload);
+  } catch (err) {
+    const detail =
+      err instanceof LabHarnessValidationError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    throw new LabHarnessUnavailableError(detail);
+  }
+
+  return buildHarnessResult(request.tests, outcomes, "http");
 }
 
 function executeInProcessLabTests(request: LabHarnessRequest): LabHarnessResult {
-  const outcomes: LabHarnessTestOutcome[] = request.tests.map(
-    (test) => {
-      const detectionObserved = deterministicDetectionObserved(
-        request.coaId,
-        test.testId,
-        request.citedFactIds
-      );
-      return {
-        testId: test.testId,
-        name: test.name,
-        techniqueId: test.techniqueId,
-        executed: true,
-        detectionObserved,
-        harness: "in-process" as const,
-      };
-    }
-  );
+  const outcomes: LabHarnessTestOutcome[] = request.tests.map((test) => {
+    const detectionObserved = deterministicDetectionObserved(
+      request.coaId,
+      test.testId,
+      request.citedFactIds
+    );
+    return {
+      testId: test.testId,
+      name: test.name,
+      techniqueId: test.techniqueId,
+      executed: true,
+      detectionObserved,
+      harness: "in-process" as const,
+    };
+  });
 
   return buildHarnessResult(request.tests, outcomes, "in-process");
 }
@@ -166,7 +215,7 @@ function deterministicDetectionObserved(
   citedFactIds: string[]
 ): boolean {
   let hash = 0;
-  const seed = `${coaId}:${testId}:${citedFactIds.sort().join(",")}`;
+  const seed = `${coaId}:${testId}:${[...citedFactIds].sort().join(",")}`;
   for (let i = 0; i < seed.length; i++) {
     hash = (hash * 31 + seed.charCodeAt(i)) % 1000;
   }

@@ -1,0 +1,288 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 4px 0 24px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.title {
+  margin: 0;
+  color: #e6f1ff;
+  font-size: 18px;
+}
+
+.subtitle {
+  margin: 6px 0 0;
+  color: #8fa8c3;
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 720px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  border: 1px solid var(--border-accent, #24415f);
+  border-radius: 10px;
+  background: rgba(8, 18, 32, 0.72);
+  padding: 12px 14px;
+}
+
+.card h3 {
+  margin: 0 0 10px;
+  color: #b8d5f4;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.list,
+.auditList,
+.stageList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.list li,
+.auditList li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #9bb7d4;
+  font-size: 12px;
+}
+
+.list strong {
+  color: #e6f1ff;
+}
+
+.releaseBtn,
+.releaseActive {
+  width: 100%;
+  text-align: left;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.releaseBtn {
+  border: 1px solid #2f587d;
+  background: #0f1a2b;
+  color: #b8d5f4;
+}
+
+.releaseActive {
+  border: 1px solid #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  color: #e6f1ff;
+}
+
+.objective {
+  margin: 0 0 10px;
+  color: #c8daf0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.metaRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.fullWidth {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: #8fa8c3;
+  font-size: 11px;
+}
+
+.input,
+.textarea {
+  border: 1px solid #2f587d;
+  border-radius: 6px;
+  background: #0b1220;
+  color: #e6f1ff;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.textarea {
+  resize: vertical;
+  min-height: 48px;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.primaryBtn,
+.secondaryBtn,
+.dangerBtn {
+  border-radius: 8px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryBtn {
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  background: linear-gradient(180deg, #2a6db8, #1e5088);
+  color: #fff;
+}
+
+.secondaryBtn {
+  border: 1px solid #2f587d;
+  background: #13253a;
+  color: #b8d5f4;
+}
+
+.dangerBtn {
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  background: rgba(153, 27, 27, 0.35);
+  color: #fecaca;
+}
+
+.primaryBtn:disabled,
+.secondaryBtn:disabled,
+.dangerBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  background: rgba(153, 27, 27, 0.25);
+  color: #fecaca;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.meta {
+  margin: 0 0 10px;
+  color: #8fa8c3;
+  font-size: 12px;
+}
+
+.stageItem {
+  color: #c8daf0;
+  font-size: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(36, 65, 95, 0.55);
+}
+
+.auditType {
+  color: #38bdf8;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.auditList li {
+  border-bottom: 1px solid rgba(36, 65, 95, 0.4);
+  padding-bottom: 6px;
+}
+
+.roundList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.roundItem {
+  border: 1px solid rgba(36, 65, 95, 0.65);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(4, 12, 24, 0.5);
+}
+
+.roundHeader {
+  color: #e6f1ff;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.findingList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.findingBlocker,
+.findingWarning {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.findingBlocker {
+  color: #fca5a5;
+}
+
+.findingWarning {
+  color: #fcd34d;
+}
+
+.findingCode {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  margin-right: 6px;
+  opacity: 0.85;
+}
+
+.remediation {
+  color: #94a3b8;
+}
+
+.actorNotes {
+  margin-top: 8px;
+  color: #7dd3fc;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.passportBox {
+  margin-top: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: rgba(6, 24, 44, 0.6);
+}
+
+.passportSummary {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #c8dff5;
+}

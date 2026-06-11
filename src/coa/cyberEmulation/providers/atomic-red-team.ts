@@ -174,8 +174,9 @@ function mapAtomicTests(
 }
 
 function detectionStats(outcomes: Awaited<ReturnType<typeof executeLabAtomicTests>>["outcomes"]) {
-  const executed = outcomes.filter((o) => o.executed).length;
-  const detected = outcomes.filter((o) => o.detectionObserved).length;
+  const executedOutcomes = outcomes.filter((o) => o.executed);
+  const executed = executedOutcomes.length;
+  const detected = executedOutcomes.filter((o) => o.detectionObserved).length;
   return {
     executed,
     detected,

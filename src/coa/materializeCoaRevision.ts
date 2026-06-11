@@ -46,11 +46,26 @@ function slugResource(label: string): string {
 function inferActionType(bar: SyncMatrixBar): string {
   const verb = (bar.actionVerb ?? "").toLowerCase();
   if (/strike|suppress|fires/.test(verb)) return "strike";
+  if (/inform|influence|message/.test(verb)) return "information";
+  if (/harden|contain/.test(verb)) return "harden";
+  if (/investigate|forensic/.test(verb)) return "investigate";
   if (/observe|monitor|isr|recon/.test(verb)) return "observe";
-  if (/cyber|disrupt|jam/.test(verb)) return "cyber";
+  if (/jam|ew/.test(verb)) return "cyber";
+  if (/cyber|disrupt|degrade/.test(verb)) return "cyber";
   if (/coordinate/.test(verb)) return "coordinate";
   if (/preserve|screen|secure/.test(verb)) return "preserve";
   return "other";
+}
+
+function resolveMaterializedPlanSource(candidate: CoaCandidate): import("./types").PlanSource {
+  if (needsMaterializedValidation(candidate)) {
+    // Operator/imported tasks may use action verbs (e.g. strike) blocked in automated validated-intel plans.
+    return "demo";
+  }
+  if (candidate.logisticsPlan.kind === "populated") {
+    return candidate.logisticsPlan.source;
+  }
+  return "validated-intel";
 }
 
 export function collectVisibleSyncBars(
@@ -100,6 +115,8 @@ export function collectRevisionBlockers(
       blockers.push(
         `Manual task "${entry.subLabel}" needs ${entry.missingFields.join(", ") || "completion"} — edit it in the left task panel`
       );
+    } else if (!entry.targetFactId) {
+      blockers.push(`Manual task "${entry.subLabel}" lacks grounded target evidence`);
     }
     if (entry.dependencyBarId && !visibleIds.has(entry.dependencyBarId)) {
       blockers.push(
@@ -109,9 +126,18 @@ export function collectRevisionBlockers(
   }
 
   for (const bar of bars) {
-    const blockingFields = bar.isManual
-      ? bar.missingFields
-      : bar.missingFields.filter((field) => field === "timing");
+    if (bar.isManual) {
+      for (const depId of bar.dependencies) {
+        if (!visibleIds.has(depId) && !visibleActionIds.has(depId)) {
+          blockers.push(
+            `Task "${bar.label}" depends on "${depId}" which was removed or hidden`
+          );
+        }
+      }
+      continue;
+    }
+
+    const blockingFields = bar.missingFields.filter((field) => field === "timing");
     if (blockingFields.length > 0) {
       const detail =
         blockingFields.includes("timing") && bar.startSec >= 0 && bar.durationSec > 0
@@ -126,10 +152,6 @@ export function collectRevisionBlockers(
           `Task "${bar.label}" depends on "${depId}" which was removed or hidden`
         );
       }
-    }
-
-    if (bar.isManual && !(bar.targetFactIds?.length ?? 0) && !bar.target?.trim()) {
-      blockers.push(`Manual task "${bar.label}" lacks grounded target evidence`);
     }
   }
 
@@ -251,10 +273,7 @@ export function materializeCoaRevision(
 
   const bars = collectVisibleSyncBars(candidate, overlay, ctx);
   const actions = bars.map(barToCoaAction);
-  const source =
-    candidate.logisticsPlan.kind === "populated"
-      ? candidate.logisticsPlan.source
-      : "validated-intel";
+  const source = resolveMaterializedPlanSource(candidate);
 
   const logisticsPlan: LogisticsPlan = buildLogisticsPlan({
     coaId: candidate.id,

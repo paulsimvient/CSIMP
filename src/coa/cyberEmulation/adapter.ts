@@ -112,5 +112,10 @@ function enforcePolicy(opts: {
 }
 
 export function isCyberRelevantActionType(type: string): boolean {
-  return type === "cyber" || type === "information";
+  return (
+    type === "cyber" ||
+    type === "information" ||
+    type === "harden" ||
+    type === "investigate"
+  );
 }

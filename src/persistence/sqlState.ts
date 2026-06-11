@@ -1,7 +1,12 @@
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import sqlWasmUrl from "sql.js/dist/sql-wasm.wasm?url";
+import {
+  recordPersistenceError,
+  recordPersistenceSuccess,
+} from "./health";
 
 const STORAGE_KEY = "coda2.sqlite.b64.v1";
+export const MAX_IMPORT_BYTES = 16 * 1024 * 1024;
 
 let sqlRuntimePromise: Promise<SqlJsStatic> | undefined;
 let dbPromise: Promise<Database> | undefined;
@@ -12,6 +17,30 @@ export type SqlSnapshotMeta = {
   updatedAt: number;
   jsonBytes: number;
 };
+
+export class PersistenceWriteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PersistenceWriteError";
+  }
+}
+
+function enqueueWrite(task: () => Promise<void>): Promise<void> {
+  writeQueue = writeQueue
+    .catch((err) => {
+      recordPersistenceError(err);
+    })
+    .then(async () => {
+      try {
+        await task();
+        recordPersistenceSuccess();
+      } catch (err) {
+        recordPersistenceError(err);
+        throw err;
+      }
+    });
+  return writeQueue;
+}
 
 export async function loadSqlSnapshot<T>(key: string): Promise<T | undefined> {
   const db = await getDb();
@@ -29,7 +58,7 @@ export async function loadSqlSnapshot<T>(key: string): Promise<T | undefined> {
 }
 
 export function saveSqlSnapshot<T>(key: string, value: T): Promise<void> {
-  writeQueue = writeQueue.then(async () => {
+  return enqueueWrite(async () => {
     const db = await getDb();
     db.run(
       `INSERT INTO state_snapshots(key, json, updated_at)
@@ -41,25 +70,22 @@ export function saveSqlSnapshot<T>(key: string, value: T): Promise<void> {
     );
     persistDb(db);
   });
-  return writeQueue;
 }
 
 export function deleteSqlSnapshot(key: string): Promise<void> {
-  writeQueue = writeQueue.then(async () => {
+  return enqueueWrite(async () => {
     const db = await getDb();
     db.run("DELETE FROM state_snapshots WHERE key = ?;", [key]);
     persistDb(db);
   });
-  return writeQueue;
 }
 
 export function clearSqlSnapshots(): Promise<void> {
-  writeQueue = writeQueue.then(async () => {
+  return enqueueWrite(async () => {
     const db = await getDb();
     db.run("DELETE FROM state_snapshots;");
     persistDb(db);
   });
-  return writeQueue;
 }
 
 export async function listSqlSnapshotMeta(): Promise<SqlSnapshotMeta[]> {
@@ -96,6 +122,12 @@ export function exportSqlDatabaseBytes(): Uint8Array | undefined {
 }
 
 export async function importSqlDatabaseBytes(bytes: Uint8Array): Promise<void> {
+  if (bytes.byteLength > MAX_IMPORT_BYTES) {
+    throw new Error(
+      `Import exceeds ${MAX_IMPORT_BYTES} bytes. Export a smaller snapshot or clear old state first.`
+    );
+  }
+
   const SQL = await getSqlRuntime();
   const db = new SQL.Database(bytes);
   db.run(`CREATE TABLE IF NOT EXISTS state_snapshots(
@@ -161,8 +193,14 @@ function writeStorage(value: string): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(STORAGE_KEY, value);
-  } catch {
-    // Ignore storage write failures (private mode, quota exceeded, etc).
+  } catch (err) {
+    const message =
+      err instanceof DOMException && err.name === "QuotaExceededError"
+        ? "Browser storage quota exceeded. Export your database, clear site data, then import again."
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    throw new PersistenceWriteError(message);
   }
 }
 

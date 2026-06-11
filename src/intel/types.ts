@@ -76,6 +76,14 @@ export type ScenarioPacket = {
    */
   constraints: string[];
   contextWindow?: string;
+  /** Loaded from registry production agent — prepended to interpreter prompt. */
+  agentSystemPrompt?: string;
+  /** Registry prompts/output-schema.md — JSON task section for interpreter. */
+  agentOutputSchema?: string;
+  /** Production registry agent — used by module loader in stub mode. */
+  agentId?: string;
+  agentVersion?: string;
+  moduleEntrypoint?: string;
 };
 
 // ─── LLM Interpretation ───────────────────────────────────────────────────────
@@ -295,4 +303,16 @@ export type IntelState = {
    */
   validatedActions: CandidateAction[];
   validatedDecisionPoints: DecisionPoint[];
+
+  /** Registry agent version + provenance hashes (when evolution API available). */
+  agentRuntime?: {
+    agentId: string;
+    agentVersion: string;
+    releaseId?: string;
+    inputHash: string;
+    outputHash: string;
+    /** Mission envelope routing when doctrine forge routes are active. */
+    envelopeClass?: string;
+    envelopeRouted?: boolean;
+  };
 };

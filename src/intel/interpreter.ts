@@ -8,6 +8,10 @@ import type {
   ScenarioPacket,
 } from "./types";
 import { buildInterpreterPrompt } from "./scenarioPacket";
+import { runRegistryAgentModule } from "./registryAgentLoader";
+
+const DEBUG_LLM =
+  import.meta.env.DEV && import.meta.env.VITE_INTEL_DEBUG_LLM === "true";
 
 export type InterpreterFn = (
   packet: ScenarioPacket
@@ -28,8 +32,26 @@ export async function llmInterpreter(
   const config = getLlmConfig();
 
   if (!usesLiveLlm(config)) {
-    console.info("[intel] VITE_LLM_PROVIDER=stub — using stub interpreter.");
-    return stubInterpreter(packet);
+    console.info("[intel] VITE_LLM_PROVIDER=stub — using registry-backed stub interpreter.");
+    const result = await stubInterpreter(packet);
+    if (packet.agentId && packet.agentVersion) {
+      const moduleOut = runRegistryAgentModule(
+        {
+          agentId: packet.agentId,
+          agentVersion: packet.agentVersion,
+          moduleEntrypoint: packet.moduleEntrypoint,
+        },
+        packet
+      );
+      if (moduleOut) {
+        const moduleBanner = `[registry-module ${packet.agentId}@${packet.agentVersion} ref=${moduleOut.interpretationRef}]`;
+        return {
+          interpretation: result.interpretation,
+          rawModelText: `${moduleBanner}\n${result.rawModelText ?? ""}`.trim(),
+        };
+      }
+    }
+    return result;
   }
 
   const prompt = buildInterpreterPrompt(packet);
@@ -44,7 +66,9 @@ export async function llmInterpreter(
       : callOpenAiCompatible(config, activePrompt);
 
   const rawFirst = await callModel(prompt);
-  console.info("[intel] Raw LLM response (attempt 1):", rawFirst);
+  if (DEBUG_LLM) {
+    console.info("[intel] Raw LLM response (attempt 1):", rawFirst);
+  }
   const first = parseInterpretation(rawFirst);
   if (!isEmptyInterpretation(first) || packet.observedFacts.length === 0) {
     return { interpretation: first, rawModelText: rawFirst };
@@ -61,7 +85,9 @@ CRITICAL REQUIREMENT:
 `.trim();
 
   const rawSecond = await callModel(retryPrompt);
-  console.info("[intel] Raw LLM response (attempt 2):", rawSecond);
+  if (DEBUG_LLM) {
+    console.info("[intel] Raw LLM response (attempt 2):", rawSecond);
+  }
   const second = parseInterpretation(rawSecond);
   if (!isEmptyInterpretation(second) || packet.observedFacts.length === 0) {
     return {

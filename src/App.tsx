@@ -27,12 +27,12 @@ import {
   useRankedCandidates,
   useRunMetadata,
   useRunPipeline,
-  useCreateOperatorDraft,
   useSelectCoa,
   useSelectedCoa,
 } from "@coa/store";
 import type { CyberEmulationRunOptions } from "./coa/cyberEmulation";
 import {
+  useAgentRuntime,
   useGroundingResult,
   useIntelStatus,
   useIntelStore,
@@ -56,6 +56,8 @@ import {
   listSqlSnapshotMeta,
   type SqlSnapshotMeta,
 } from "./persistence/sqlState";
+import { bootstrapPersistedState } from "./persistence/bootstrap";
+import { subscribePersistenceHealth } from "./persistence/health";
 import styles from "./App.module.css";
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
@@ -249,6 +251,7 @@ export function App() {
     | "logistics"
     | "reports"
     | "trace"
+    | "agents"
   >("overview");
   const [showFixSteps, setShowFixSteps] = useState(false);
   const [snapshotMeta, setSnapshotMeta] = useState<SqlSnapshotMeta[]>([]);
@@ -289,6 +292,7 @@ export function App() {
   const rawModelText = useRawModelText();
   const interpretation = useRawInterpretation();
   const groundingResult = useGroundingResult();
+  const agentRuntime = useAgentRuntime();
   const validatedActions = useValidatedActions();
   const validatedDecisionPoints = useValidatedDecisionPoints();
   const runIntel = useRunIntel();
@@ -303,7 +307,6 @@ export function App() {
   const runMetadata = useRunMetadata();
   const resetCoa = useResetCoa();
   const selectCoa = useSelectCoa();
-  const createOperatorDraft = useCreateOperatorDraft();
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFullRun = async () => {
@@ -390,6 +393,21 @@ export function App() {
   };
 
   useEffect(() => {
+    void bootstrapPersistedState().then((result) => {
+      if (result.error) {
+        setPersistenceError(result.error);
+      }
+      void refreshPersistenceStatus();
+    });
+
+    return subscribePersistenceHealth((health) => {
+      if (!health.ok && health.lastError) {
+        setPersistenceError(health.lastError);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
     void refreshPersistenceStatus();
   }, [intelStatus, coaStatus, selectedCoa?.id]);
 
@@ -423,8 +441,13 @@ export function App() {
     try {
       const buffer = await file.arrayBuffer();
       await importSqlDatabaseBytes(new Uint8Array(buffer));
+      const result = await bootstrapPersistedState();
+      await refreshPersistenceStatus();
+      if (result.error) {
+        setPersistenceError(result.error);
+        return;
+      }
       setPersistenceError(undefined);
-      window.location.reload();
     } catch (err) {
       setPersistenceError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -964,7 +987,6 @@ export function App() {
             selectedCoaId={selectedCoa?.id}
             onSelectCoa={selectCoa}
             onRunCoaEvaluation={() => void handleFullRun()}
-            onCreateOperatorCoa={() => createOperatorDraft()}
             coaRunning={isRunning}
             commanderIntent={packet?.commanderIntent}
             validatedDecisionPoints={validatedDecisionPoints}
@@ -989,6 +1011,7 @@ export function App() {
           onOpenTrace={() => setActiveView("trace")}
           runtimeStatus={runtimeStatus}
           groundingResult={groundingResult}
+          agentRuntime={agentRuntime}
           topBlockingIssueDetails={topBlockingIssueDetails}
           topReviewIssueDetails={topReviewIssueDetails}
           hiddenBlockingIssueCount={hiddenBlockingIssueCount}
@@ -1323,6 +1346,7 @@ function buildMessageTraffic(
           : ("info" as const),
     text: `${fact.domain} · ${fact.event}`,
     factId: fact.id,
+    offsetSec: 0,
   }));
   const actionMessages = topActions.slice(0, 2).map((action) => ({
     id: `action-${action.id}`,

@@ -1,0 +1,21 @@
+{
+  "proposalId": "prop-agent-module-001",
+  "targetAgentId": "intel-interpreter",
+  "baseAgentVersion": "1.0.0",
+  "baseCommitSha": "7756912aa664",
+  "changeTier": "agent-module",
+  "objective": "Add packet hash suffix to intel interpreter stub for traceability in shadow runs.",
+  "evidenceRefs": ["shadow-run-042"],
+  "changedFiles": [
+    {
+      "path": "CoAgenticModel/src/agents/intelInterpreter/index.ts",
+      "patch": "--- a/CoAgenticModel/src/agents/intelInterpreter/index.ts\n+++ b/CoAgenticModel/src/agents/intelInterpreter/index.ts\n@@ -16,6 +16,9 @@\n export function runIntelInterpreterStub(\n   input: IntelInterpreterAgentInput\n ): IntelInterpreterAgentOutput {\n+  const factSuffix = input.factIds.length > 0 ? input.factIds.join(',') : 'none';\n   return {\n-    interpretationRef: `stub-${input.packetId}-${input.factIds.length}-facts`,\n+    interpretationRef: `stub-${input.packetId}-${input.factIds.length}-facts-${factSuffix}`,\n   };\n }\n",
+      "reason": "Include cited fact ids in stub ref for shadow comparison debugging."
+    }
+  ],
+  "testsAddedOrChanged": ["CoAgenticModel/src/agents/intelInterpreter/index.test.ts"],
+  "expectedBenefits": ["Shadow runs can distinguish fact-set variants"],
+  "knownRisks": ["Stub output format change for downstream parsers"],
+  "requestedRiskClass": "low",
+  "nextVersion": "1.2.0"
+}

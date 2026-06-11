@@ -5,4 +5,5 @@ export type ActiveView =
   | "coas"
   | "logistics"
   | "reports"
-  | "trace";
+  | "trace"
+  | "agents";

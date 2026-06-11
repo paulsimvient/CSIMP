@@ -1,26 +1,46 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "path";
+import { handleAgentEvolutionRequest } from "./CoAgenticModel/server/http";
+import { handleLabHarnessProxyRequest } from "./server/labHarnessProxy";
 import { handleLlmProxyRequest } from "./server/llmProxy";
 
-function llmProxyPlugin(): Plugin {
+function apiProxyPlugin(): Plugin {
   return {
-    name: "llm-proxy",
+    name: "api-proxy",
     configureServer(server) {
       server.middlewares.use("/api/llm", (req, res) => {
         void handleLlmProxyRequest(req, res);
+      });
+      server.middlewares.use("/api/cyber-lab", (req, res) => {
+        void handleLabHarnessProxyRequest(req, res);
+      });
+      server.middlewares.use("/api/agent-evolution", (req, res) => {
+        void handleAgentEvolutionRequest(req, res);
       });
     },
     configurePreviewServer(server) {
       server.middlewares.use("/api/llm", (req, res) => {
         void handleLlmProxyRequest(req, res);
       });
+      server.middlewares.use("/api/cyber-lab", (req, res) => {
+        void handleLabHarnessProxyRequest(req, res);
+      });
+      server.middlewares.use("/api/agent-evolution", (req, res) => {
+        void handleAgentEvolutionRequest(req, res);
+      });
     },
   };
 }
 
 export default defineConfig({
-  plugins: [react(), llmProxyPlugin()],
+  plugins: [react(), apiProxyPlugin()],
+  server: {
+    host: "127.0.0.1",
+  },
+  preview: {
+    host: "127.0.0.1",
+  },
   resolve: {
     alias: {
       "@coa": resolve(__dirname, "src/coa"),
@@ -33,13 +53,9 @@ export default defineConfig({
         manualChunks(id) {
           if (id.includes("node_modules/maplibre-gl")) return "maplibre";
           if (id.includes("node_modules/sql.js")) return "sqljs";
+          return undefined;
         },
       },
-    },
-  },
-  test: {
-    env: {
-      VITE_CYBER_ALLOW_IN_PROCESS_LAB: "true",
     },
   },
 });

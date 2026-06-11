@@ -151,6 +151,8 @@ type SituationalMapProps = {
   onFactIconClick?: (factId: string) => void;
   onPinnedCoordUpdate?: (factId: string, coord: [number, number]) => void;
   layerMode?: MapLayerMode;
+  /** During COA execution playback, keep sensor coverage visible alongside task links. */
+  executionPlaybackActive?: boolean;
 };
 
 export function SituationalMap({
@@ -164,6 +166,7 @@ export function SituationalMap({
   onFactIconClick,
   onPinnedCoordUpdate,
   layerMode = "main",
+  executionPlaybackActive = false,
 }: SituationalMapProps) {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -406,8 +409,8 @@ export function SituationalMap({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.getLayer("zone-blue-fill")) return;
-    applyLayerVisibility(map, layerMode);
-  }, [layerMode]);
+    applyLayerVisibility(map, layerMode, executionPlaybackActive);
+  }, [layerMode, executionPlaybackActive]);
 
   const toggleDomain = (domain: string) => {
     setSelectedDomains((prev) =>
@@ -803,7 +806,12 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
         "#ef4444",
         "#38bdf8",
       ],
-      "fill-opacity": 0.16,
+      "fill-opacity": [
+        "case",
+        ["==", ["get", "pendingTask"], 1],
+        0.1,
+        0.16,
+      ],
     },
   });
   map.addLayer({
@@ -821,13 +829,22 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
         "#22c55e",
         "logistics-line",
         "#fbbf24",
+        "disrupt-line",
+        "#f87171",
+        "execution-link",
+        "#67e8f9",
         "#67e8f9",
       ],
       "line-width": 3,
-      "line-opacity": 0.9,
+      "line-opacity": [
+        "case",
+        ["==", ["get", "pendingTask"], 1],
+        0.55,
+        0.9,
+      ],
       "line-dasharray": [
         "case",
-        ["==", ["get", "dashed"], 1],
+        ["any", ["==", ["get", "dashed"], 1], ["==", ["get", "pendingTask"], 1]],
         ["literal", [2, 2]],
         ["literal", [1, 0]],
       ],
@@ -1026,7 +1043,7 @@ async function ensureOperationalLayers(map: maplibregl.Map) {
     },
   });
 
-  applyLayerVisibility(map, "main");
+  applyLayerVisibility(map, "main", false);
 }
 
 function setLayerVisible(map: maplibregl.Map, layerId: string, visible: boolean) {
@@ -1034,9 +1051,13 @@ function setLayerVisible(map: maplibregl.Map, layerId: string, visible: boolean)
   map.setLayoutProperty(layerId, "visibility", visible ? "visible" : "none");
 }
 
-function applyLayerVisibility(map: maplibregl.Map, mode: MapLayerMode) {
+function applyLayerVisibility(
+  map: maplibregl.Map,
+  mode: MapLayerMode,
+  executionPlaybackActive = false
+) {
   const showZones = mode === "zones";
-  const showSensors = mode === "sensors";
+  const showSensors = mode === "sensors" || executionPlaybackActive;
   const showTrackRings = mode === "main" || showSensors;
 
   setLayerVisible(map, "zone-blue-fill", showZones);
@@ -1049,8 +1070,11 @@ function applyLayerVisibility(map: maplibregl.Map, mode: MapLayerMode) {
   setLayerVisible(map, "sensor-coverage-line", showSensors);
   setLayerVisible(map, "sensor-sites-circle", showSensors);
   setLayerVisible(map, "track-ring-sensor-line", showTrackRings);
-  setLayerVisible(map, "track-ring-detection-line", mode === "main");
+  setLayerVisible(map, "track-ring-detection-line", mode === "main" || executionPlaybackActive);
   setLayerVisible(map, "track-halo", true);
   setLayerVisible(map, "track-icons", true);
+  setLayerVisible(map, "action-preview-fill", true);
+  setLayerVisible(map, "action-preview-line", true);
+  setLayerVisible(map, "action-preview-point", true);
 }
 

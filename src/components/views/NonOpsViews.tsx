@@ -1,3 +1,4 @@
+import { AgentEvolutionPanel } from "@components/agentEvolution/AgentEvolutionPanel";
 import { CoaSelector } from "@components/CoaSelector";
 import { CyberLabApprovalPanel } from "@components/coa/CyberLabApprovalPanel";
 import { CyberEffectsBadge } from "@components/coa/CyberEffectsBadge";
@@ -16,7 +17,8 @@ type ActiveView =
   | "coas"
   | "logistics"
   | "reports"
-  | "trace";
+  | "trace"
+  | "agents";
 
 type IssueDetail = {
   title: string;
@@ -38,6 +40,13 @@ type NonOpsViewsProps = {
   facts: any[];
   packet: any;
   interpretation: any;
+  agentRuntime?: {
+    agentId: string;
+    agentVersion: string;
+    releaseId?: string;
+    inputHash: string;
+    outputHash: string;
+  };
   validatedActions: any[];
   coaError: string | undefined;
   candidates: any[];
@@ -209,6 +218,7 @@ export function NonOpsViews(props: NonOpsViewsProps) {
           packet={props.packet}
           interpretation={props.interpretation}
           groundingResult={props.groundingResult}
+          agentRuntime={props.agentRuntime}
         />
       </section>
     );
@@ -377,6 +387,14 @@ export function NonOpsViews(props: NonOpsViewsProps) {
             {props.persistenceError && <span>{props.persistenceError}</span>}
           </div>
         </div>
+      </section>
+    );
+  }
+
+  if (props.activeView === "agents") {
+    return (
+      <section className={styles.viewPanel}>
+        <AgentEvolutionPanel />
       </section>
     );
   }

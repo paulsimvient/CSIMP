@@ -8,6 +8,7 @@ import {
   setMatrixOverlay,
   validateOperatorCoa,
   mergeOperatorRevisionIntoParent,
+  removeCoaCandidate,
 } from "./operatorCoaActions";
 import { collectRevisionBlockers } from "./materializeCoaRevision";
 import { getExecuteBlockers, getMatrixOverlay, hasOverlayChanges } from "./operatorCoa";
@@ -131,6 +132,7 @@ describe("operator COA lifecycle", () => {
       logisticsReady: true,
     });
     expect(blockers).toEqual([]);
+    expect(state.matrixOverlaysByCoaId![forked!.forkId]!.manualEntries).toEqual([]);
     state = executePreparedCoa(state);
     expect(state.executedSnapshot?.candidateId).toBe(forked!.forkId);
     expect(state.executedSnapshot?.orderSet.actionCount).toBeGreaterThan(0);
@@ -189,5 +191,21 @@ describe("operator COA lifecycle", () => {
     expect(parent?.logisticsPlan.kind).toBe("populated");
     expect(state.selectedCoaId).toBe(candidate.id);
     expect(state.matrixOverlaysByCoaId?.[candidate.id]).toBeUndefined();
+  });
+
+  it("removes operator drafts and reselects a feasible automated COA", () => {
+    const candidate = automatedCandidate("coa-auto");
+    const { draftId, state: withDraft } = createOperatorDraftCandidate(baseState(candidate));
+    const next = removeCoaCandidate(withDraft, draftId);
+    expect(next.candidatesById[draftId]).toBeUndefined();
+    expect(next.selectedCoaId).toBe(candidate.id);
+  });
+
+  it("removes automated COAs from the candidate list", () => {
+    const candidate = automatedCandidate("coa-auto");
+    const state = baseState(candidate);
+    const next = removeCoaCandidate(state, candidate.id);
+    expect(next.candidatesById[candidate.id]).toBeUndefined();
+    expect(next.selectedCoaId).toBeUndefined();
   });
 });

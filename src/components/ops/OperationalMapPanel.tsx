@@ -17,6 +17,7 @@ type OperationalMapPanelProps = {
   focusNonce?: number;
   highlightedFactIds?: string[];
   actionPreview?: GeoJSON.FeatureCollection | null;
+  executionPlaybackActive?: boolean;
   onFactIconClick: (factId: string) => void;
   onPinnedCoordUpdate?: (factId: string, coord: [number, number]) => void;
   usingScenarioData?: boolean;
@@ -32,6 +33,7 @@ export function OperationalMapPanel({
   focusNonce,
   highlightedFactIds,
   actionPreview,
+  executionPlaybackActive,
   onFactIconClick,
   onPinnedCoordUpdate,
   usingScenarioData,
@@ -89,6 +91,7 @@ export function OperationalMapPanel({
               focusNonce={focusNonce}
               highlightedFactIds={highlightedFactIds}
               actionPreview={actionPreview}
+              executionPlaybackActive={executionPlaybackActive}
               onFactIconClick={onFactIconClick}
               onPinnedCoordUpdate={onPinnedCoordUpdate}
               layerMode={layerMode}

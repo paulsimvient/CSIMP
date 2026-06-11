@@ -27,6 +27,8 @@ export type MessageTrafficItem = {
   text: string;
   /** Linked map/contact fact ID when available. */
   factId?: string;
+  /** Mission timeline position for matrix event markers. */
+  offsetSec?: number;
 };
 
 export type ShowOrderItem = {

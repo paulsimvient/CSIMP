@@ -106,6 +106,9 @@ describe("materializeCoaRevision", () => {
       category: "supporting-effort",
       rowKey: "maneuver::supporting-effort",
       subLabel: "Supporting Effort",
+      actor: "GROU - Northwest",
+      actionVerb: "Observe",
+      target: "Objective ALPHA",
       startSec: 0,
       durationSec: 600,
       status: "planned",
@@ -119,5 +122,96 @@ describe("materializeCoaRevision", () => {
     };
     const blockers = collectRevisionBlockers(candidate, overlay);
     expect(blockers.some((b) => /grounded target evidence/i.test(b))).toBe(true);
+  });
+
+  it("reports incomplete manual drafts once without duplicate bar labels", () => {
+    const candidate: CoaCandidate = {
+      id: "operator-2",
+      runId: "run-1",
+      origin: "operator-authored",
+      revisionId: "rev-op-2",
+      validationStatus: "unvalidated",
+      status: "draft",
+      label: "Operator COA – Draft 1",
+      selectedActions: [],
+      logisticsPlan: { kind: "empty", reason: "not-built" },
+      scores: { feasibility: 0, logistics: 0, effects: 0, risk: 0, overall: 0 },
+    };
+    const draft: ManualSyncEntry = {
+      id: "manual-draft",
+      origin: "user-added",
+      category: "main-effort",
+      rowKey: "maneuver::main-effort",
+      subLabel: "Main Effort",
+      actionVerb: "Advance",
+      startSec: 120,
+      durationSec: 600,
+      status: "planned",
+      source: "matrix",
+      missingFields: ["actor", "target"],
+      confirmed: false,
+    };
+    const overlay = {
+      ...emptyMatrixOverlay(),
+      manualEntries: [draft],
+    };
+    const blockers = collectRevisionBlockers(candidate, overlay);
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]).toMatch(/Main Effort.*actor, target/);
+  });
+
+  it("materializes operator drafts with strike verbs without validated-intel label guard", () => {
+    const candidate: CoaCandidate = {
+      id: "operator-1",
+      runId: "run-1",
+      origin: "operator-authored",
+      revisionId: "rev-op-1",
+      validationStatus: "unvalidated",
+      status: "draft",
+      label: "Operator COA – Draft 1",
+      selectedActions: [],
+      logisticsPlan: { kind: "empty", reason: "not-built" },
+      scores: { feasibility: 0, logistics: 0, effects: 0, risk: 0, overall: 0 },
+    };
+    const manualEntry: ManualSyncEntry = {
+      id: "manual-strike",
+      origin: "user-added",
+      category: "supporting-effort",
+      rowKey: "maneuver::supporting-effort",
+      subLabel: "Supporting Effort",
+      actor: "GROU - Northwest coastal",
+      actionVerb: "Strike",
+      target: "AIR - Western air defense",
+      targetFactId: "fact-air-1",
+      startSec: 0,
+      durationSec: 600,
+      status: "planned",
+      source: "matrix",
+      missingFields: [],
+      confirmed: true,
+    };
+    const overlay = {
+      ...emptyMatrixOverlay(),
+      manualEntries: [manualEntry],
+    };
+    const result = materializeCoaRevision(candidate, overlay, {
+      observedFacts: [
+        {
+          id: "fact-air-1",
+          domain: "air",
+          entity: "Western air defense",
+          event: "Active",
+          time: "00:00",
+          source: "test",
+          confidence: "high",
+          severity: "medium",
+        },
+      ],
+    });
+    expect(result.blockers).toEqual([]);
+    expect(result.candidate?.logisticsPlan.kind).toBe("populated");
+    if (result.candidate?.logisticsPlan.kind === "populated") {
+      expect(result.candidate.logisticsPlan.source).toBe("demo");
+    }
   });
 });

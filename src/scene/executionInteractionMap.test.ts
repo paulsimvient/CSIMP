@@ -4,6 +4,7 @@ import type { ObservedFact } from "../intel/types";
 import type { OverviewTrack } from "../components/ops/types";
 import {
   buildExecutionInteractionMap,
+  resolveBarFallbackAnchor,
   resolveBarInteractionCoords,
 } from "./executionInteractionMap";
 
@@ -72,5 +73,62 @@ describe("executionInteractionMap", () => {
     expect(
       geojson?.features.some((feature) => feature.geometry.type === "LineString")
     ).toBe(true);
+  });
+
+  it("adds a fallback execution link when the verb only draws an area", () => {
+    const disruptBar: SyncMatrixBar = {
+      ...bar,
+      actionVerb: "Disrupt",
+      label: "Disrupt air defense",
+    };
+    const geojson = buildExecutionInteractionMap({ bars: [disruptBar], facts, tracks });
+    expect(
+      geojson?.features.some(
+        (feature) =>
+          feature.geometry.type === "LineString" &&
+          feature.properties?.previewKind === "disrupt-line"
+      )
+    ).toBe(true);
+  });
+
+  it("shows a pending disrupt footprint for incomplete cyber drafts", () => {
+    const cyberFacts: ObservedFact[] = [
+      {
+        id: "fact-cyber",
+        time: "12:00:00",
+        domain: "cyber",
+        entity: "Port authentication stack",
+        event: "Anomaly cluster",
+        source: "siem",
+        confidence: "medium",
+        severity: "high",
+      },
+    ];
+    const draftBar: SyncMatrixBar = {
+      ...bar,
+      id: "manual-draft",
+      actor: undefined,
+      target: undefined,
+      targetFactIds: [],
+      actionVerb: "Disrupt",
+      label: "Disrupt",
+      rowKey: "cyber::disruption",
+      missingFields: ["actor", "target"],
+    };
+    const geojson = buildExecutionInteractionMap({
+      bars: [draftBar],
+      facts: cyberFacts,
+      tracks,
+      useFallbackAnchors: true,
+    });
+    expect(
+      geojson?.features.some(
+        (feature) =>
+          feature.geometry.type === "Polygon" &&
+          feature.properties?.previewKind === "disrupt-area" &&
+          feature.properties?.pendingTask === 1
+      )
+    ).toBe(true);
+    expect(resolveBarFallbackAnchor(draftBar, cyberFacts, tracks)).toBeDefined();
   });
 });

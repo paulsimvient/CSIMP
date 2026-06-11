@@ -1,6 +1,13 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { z } from "zod";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+const MAX_REQUEST_BYTES = 256 * 1024;
+const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MESSAGES = 20;
+const MAX_MESSAGE_CONTENT_CHARS = 50_000;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const RATE_LIMIT_MAX_REQUESTS = 30;
 
 export type LlmProxyEnv = {
   endpoint?: string;
@@ -15,10 +22,33 @@ export type LlmProxyRequest = {
   temperature?: number;
 };
 
-function readJsonBody(req: IncomingMessage): Promise<unknown> {
+const messageSchema = z.object({
+  role: z.enum(["system", "user", "assistant", "tool"]),
+  content: z.string().max(MAX_MESSAGE_CONTENT_CHARS),
+});
+
+const requestSchema = z.object({
+  model: z.string().min(1).max(200),
+  messages: z.array(messageSchema).min(1).max(MAX_MESSAGES),
+  response_format: z.object({ type: z.string() }).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+});
+
+const rateLimitByIp = new Map<string, { count: number; windowStart: number }>();
+
+function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    let total = 0;
+    req.on("data", (chunk) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error(`Request body exceeds ${maxBytes} bytes`));
+        req.destroy();
+        return;
+      }
+      chunks.push(Buffer.from(chunk));
+    });
     req.on("end", () => {
       try {
         const raw = Buffer.concat(chunks).toString("utf8");
@@ -29,6 +59,25 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
     });
     req.on("error", reject);
   });
+}
+
+function clientIp(req: IncomingMessage): string {
+  const forwarded = req.headers?.["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.length > 0) {
+    return forwarded.split(",")[0]?.trim() ?? "unknown";
+  }
+  return req.socket?.remoteAddress ?? "unknown";
+}
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const current = rateLimitByIp.get(ip);
+  if (!current || now - current.windowStart >= RATE_LIMIT_WINDOW_MS) {
+    rateLimitByIp.set(ip, { count: 1, windowStart: now });
+    return false;
+  }
+  current.count += 1;
+  return current.count > RATE_LIMIT_MAX_REQUESTS;
 }
 
 function isLocalDevEndpoint(url: string): boolean {
@@ -65,6 +114,13 @@ export async function handleLlmProxyRequest(
     return;
   }
 
+  if (isRateLimited(clientIp(req))) {
+    res.statusCode = 429;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ error: "LLM proxy rate limit exceeded" }));
+    return;
+  }
+
   const endpoint = env.endpoint?.trim();
   const apiKey = env.apiKey?.trim();
 
@@ -94,22 +150,32 @@ export async function handleLlmProxyRequest(
 
   let payload: unknown;
   try {
-    payload = await readJsonBody(req);
-  } catch {
+    payload = await readJsonBody(req, MAX_REQUEST_BYTES);
+  } catch (err) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ error: "Invalid JSON body" }));
+    res.end(
+      JSON.stringify({
+        error: err instanceof Error ? err.message : "Invalid JSON body",
+      })
+    );
     return;
   }
 
-  const body = payload as Partial<LlmProxyRequest>;
-  if (!body.model || !Array.isArray(body.messages) || body.messages.length === 0) {
+  const parsed = requestSchema.safeParse(payload);
+  if (!parsed.success) {
     res.statusCode = 400;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ error: "Request must include model and messages[]" }));
+    res.end(
+      JSON.stringify({
+        error: "Request failed schema validation",
+        detail: parsed.error.message,
+      })
+    );
     return;
   }
 
+  const body = parsed.data;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), env.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
@@ -130,6 +196,13 @@ export async function handleLlmProxyRequest(
     });
 
     const text = await upstream.text();
+    if (text.length > MAX_RESPONSE_BYTES) {
+      res.statusCode = 502;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ error: "Upstream LLM response exceeded size limit" }));
+      return;
+    }
+
     res.statusCode = upstream.status;
     res.setHeader("Content-Type", upstream.headers.get("content-type") ?? "application/json");
     if (!upstream.ok) {

@@ -43,8 +43,11 @@ cp .env.example .env
 | `VITE_LLM_PROVIDER` | `stub`, `ollama`, or `openai` |
 | `VITE_OLLAMA_BASE_URL` | Local Ollama base URL |
 | `VITE_LLM_MODEL` | Model name |
-| `VITE_CYBER_LAB_HARNESS_URL` | External cyber lab harness URL |
+| `VITE_CYBER_LAB_HARNESS_URL` | Direct external cyber lab harness URL (legacy) |
+| `VITE_CYBER_LAB_USE_SERVER_PROXY` | Route lab harness through `/api/cyber-lab` (recommended) |
 | `VITE_CYBER_ALLOW_IN_PROCESS_LAB` | Dev-only in-process cyber fallback |
+| `VITE_INTEL_RETAIN_RAW_MODEL_TEXT` | Opt-in persistence of raw LLM text (default off) |
+| `VITE_INTEL_DEBUG_LLM` | Dev-only console logging of raw LLM responses |
 
 ### Server-only (never `VITE_` prefix)
 
@@ -53,8 +56,12 @@ cp .env.example .env
 | `LLM_ENDPOINT` | Remote OpenAI-compatible endpoint for `/api/llm` proxy |
 | `LLM_API_KEY` | Remote provider API key (server-side only) |
 | `LLM_PROXY_TIMEOUT_MS` | Proxy timeout (default 60000) |
+| `CYBER_LAB_HARNESS_URL` | Upstream lab executor for `/api/cyber-lab` proxy |
+| `CYBER_LAB_HARNESS_TIMEOUT_MS` | Lab harness proxy timeout (default 30000) |
 
 **Never put remote API keys in `VITE_*` variables** — they are bundled into the browser.
+
+On startup, CODA2 hydrates intel and COA state from browser-local SQLite snapshots (import restores state without a full page reload).
 
 ## How to run
 
@@ -100,6 +107,7 @@ GitHub Actions CI runs typecheck, tests, build, and uploads `coda2-source.tar.gz
 - Scheduler semantics are deterministic heuristics, not a full SMT solver.
 - Logistics dependency typing is prototype-level (`requires-completion`, `uses-live-feed`, `shares-evidence`).
 - Remote LLM calls require the Vite `/api/llm` proxy (dev and preview).
+- Cyber lab harness calls should use the `/api/cyber-lab` proxy with server-side `CYBER_LAB_HARNESS_URL`.
 
 ## Security notes
 

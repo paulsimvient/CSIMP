@@ -103,6 +103,7 @@ function NavigationTabs({
     { id: "actions", label: "Action Proposals" },
     { id: "coas", label: "COA Candidates" },
     { id: "logistics", label: "Logistics" },
+    { id: "agents", label: "Agent Evolution" },
   ];
   const analysisActive = analysisViews.some((view) => view.id === activeView);
   const [analysisOpen, setAnalysisOpen] = useState(false);

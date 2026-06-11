@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { LogisticsMatrix } from "@components/LogisticsMatrix";
-import { SyncMatrix, type BarPatch } from "@components/SyncMatrix";
+import { SyncMatrix, type BarPatch, type MatrixTimelineSeekTarget } from "@components/SyncMatrix";
 import type { ManualSyncEntry } from "../../coa/manualSync";
 import type { SyncDecisionPointInput, SyncMatrixBar } from "../../coa/syncMatrix";
 import type { SyncGridRowKey } from "../../coa/syncGridSchema";
@@ -17,6 +17,7 @@ import type { LogisticsChip } from "@coa/types";
 import type { ObservedFact } from "../../intel/types";
 import type { LogisticsEmptyContext } from "@components/LogisticsMatrix";
 import type { useDisplayedPlan } from "@coa/store";
+import type { MessageTrafficItem } from "./types";
 import styles from "../../App.module.css";
 
 type DisplayedPlan = ReturnType<typeof useDisplayedPlan>;
@@ -66,9 +67,14 @@ export type MapLogisticsStackProps = {
   executionBanner?: ReactNode;
   executionActiveBarIds?: Set<string>;
   executionCompletedBarIds?: Set<string>;
-  executionPlaybackPhase?: "playing" | "committed";
-  timeline?: ReactNode;
-  timelineExpanded?: boolean;
+  executionPlaybackPhase?: "playing" | "paused" | "committed";
+  executionPlayheadSec?: number;
+  onTimelineSeek?: (timeSec: number, target: MatrixTimelineSeekTarget) => void;
+  onMatrixFocus?: () => void;
+  focusedSectionId?: string;
+  timelineEvents?: MessageTrafficItem[];
+  selectedTimelineEventId?: string;
+  onTimelineEventSelect?: (event: MessageTrafficItem) => void;
 };
 
 function resizeStep(event: KeyboardEvent): number {
@@ -111,9 +117,23 @@ type SharedMatrixProps = Pick<
   | "executionActiveBarIds"
   | "executionCompletedBarIds"
   | "executionPlaybackPhase"
+  | "executionPlayheadSec"
+  | "onTimelineSeek"
+  | "onMatrixFocus"
+  | "focusedSectionId"
+  | "timelineEvents"
+  | "selectedTimelineEventId"
+  | "onTimelineEventSelect"
 >;
 
-function SyncMatrixPanel(props: SharedMatrixProps & { onExpandMatrix?: () => void }) {
+function SyncMatrixPanel(
+  props: SharedMatrixProps & {
+    onExpandMatrix?: () => void;
+    embedded?: boolean;
+    stepNumber?: string;
+    matrixSubtitle?: string;
+  }
+) {
   return (
     <SyncMatrix
       plan={props.displayedPlan}
@@ -150,6 +170,16 @@ function SyncMatrixPanel(props: SharedMatrixProps & { onExpandMatrix?: () => voi
       executionActiveBarIds={props.executionActiveBarIds}
       executionCompletedBarIds={props.executionCompletedBarIds}
       executionPlaybackPhase={props.executionPlaybackPhase}
+      executionPlayheadSec={props.executionPlayheadSec}
+      onTimelineSeek={props.onTimelineSeek}
+      onMatrixFocus={props.onMatrixFocus}
+      focusedSectionId={props.focusedSectionId}
+      timelineEvents={props.timelineEvents}
+      selectedTimelineEventId={props.selectedTimelineEventId}
+      onTimelineEventSelect={props.onTimelineEventSelect}
+      embedded={props.embedded}
+      stepNumber={props.stepNumber}
+      matrixSubtitle={props.matrixSubtitle}
     />
   );
 }
@@ -157,22 +187,18 @@ function SyncMatrixPanel(props: SharedMatrixProps & { onExpandMatrix?: () => voi
 function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
   const {
     map,
-    timeline,
-    timelineExpanded = false,
     executionBanner,
     logisticsTitle = "Synchronization Matrix",
     logisticsDescription,
     logisticsStepNumber,
-    defaultLogisticsHeight = 280,
-    defaultLowerRatio = 0.36,
-    minLogisticsHeight = 200,
+    defaultLogisticsHeight = 220,
+    defaultLowerRatio = 0.26,
+    minLogisticsHeight = 160,
     minMapHeight = 220,
   } = props;
 
   const [lowerPanelHeight, setLowerPanelHeight] = useState(defaultLogisticsHeight);
-  const [mapMaximized, setMapMaximized] = useState(false);
-  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
-  const [introCollapsed, setIntroCollapsed] = useState(false);
+  const [introCollapsed, setIntroCollapsed] = useState(true);
   const stackRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
 
@@ -213,7 +239,6 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
 
   const adjustLower = useCallback(
     (delta: number) => {
-      setMapMaximized(false);
       setLowerPanelHeight((prev) => clampLowerHeight(prev + delta));
     },
     [clampLowerHeight]
@@ -221,7 +246,6 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
 
   const startLowerDrag = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
-      if (mapMaximized) return;
       e.preventDefault();
       const startY = e.clientY;
       const startLower = lowerPanelHeight;
@@ -240,12 +264,11 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
       window.addEventListener("pointermove", onMove);
       window.addEventListener("pointerup", onUp);
     },
-    [lowerPanelHeight, clampLowerHeight, mapMaximized]
+    [lowerPanelHeight, clampLowerHeight]
   );
 
   const handleSeparatorKey = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (mapMaximized) return;
       const step = resizeStep(event);
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -262,24 +285,19 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
         setLowerPanelHeight(clampLowerHeight(containerH - minMapHeight - 12));
       }
     },
-    [adjustLower, clampLowerHeight, mapMaximized, minLogisticsHeight, minMapHeight]
+    [adjustLower, clampLowerHeight, minLogisticsHeight, minMapHeight]
   );
 
   const expandMapFull = useCallback(() => {
-    setMapMaximized(true);
-    setTimelineCollapsed(true);
-  }, []);
+    setLowerPanelHeight(minLogisticsHeight);
+  }, [minLogisticsHeight]);
 
   const expandMatrixFull = useCallback(() => {
-    setMapMaximized(false);
-    setTimelineCollapsed(true);
     const containerH = stackRef.current?.offsetHeight ?? 800;
     setLowerPanelHeight(clampLowerHeight(containerH - minMapHeight - 12));
   }, [clampLowerHeight, minMapHeight]);
 
   const resetSplit = useCallback(() => {
-    setMapMaximized(false);
-    setTimelineCollapsed(false);
     const containerH = stackRef.current?.offsetHeight ?? 800;
     setLowerPanelHeight(clampLowerHeight(Math.round(containerH * defaultLowerRatio)));
   }, [clampLowerHeight, defaultLowerRatio]);
@@ -313,8 +331,8 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
         </button>
       )}
 
-      <div className={mapMaximized ? styles.opsMapSlotMaximized : styles.opsMapSlot}>
-        <div className={styles.stackSectionToolbar}>
+      <div className={styles.opsMapSlot}>
+        <div className={`${styles.stackSectionToolbar} ${styles.stackSectionToolbarCompact}`}>
           <strong>Operational Map</strong>
           <div className={styles.inlineActions}>
             <span className={styles.splitPercentBadge}>Map {mapPercent}%</span>
@@ -335,96 +353,58 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
               Map −
             </button>
             <button type="button" className={styles.headerButton} onClick={expandMapFull}>
-              Maximize Map
+              Max Map
             </button>
             <button type="button" className={styles.headerButton} onClick={resetSplit}>
-              Reset Split
+              Reset
             </button>
           </div>
         </div>
         {map}
       </div>
 
-      {executionBanner && !mapMaximized ? executionBanner : null}
-
-      {!mapMaximized ? (
-        <div
-          className={styles.opsRowHandle}
-          onPointerDown={startLowerDrag}
-          onKeyDown={handleSeparatorKey}
-          title="Drag to resize — pull down for more map, up for more matrix"
-          role="separator"
-          aria-orientation="horizontal"
-          aria-valuenow={lowerPanelHeight}
-          aria-valuemin={minLogisticsHeight}
-          aria-valuemax={(stackRef.current?.offsetHeight ?? 800) - minMapHeight - 12}
-          aria-label="Resize map and lower panels"
-          tabIndex={0}
-        >
-          <span className={styles.opsRowHandleLabel}>
-            Resize map / matrix · Map {mapPercent}% · Matrix {100 - mapPercent}%
-          </span>
-        </div>
+      {executionBanner ? (
+        <div className={styles.executionBannerSlot}>{executionBanner}</div>
       ) : null}
 
-      {!mapMaximized ? (
+      <div
+        className={styles.opsRowHandle}
+        onPointerDown={startLowerDrag}
+        onKeyDown={handleSeparatorKey}
+        title="Drag to resize — pull down for more map, up for more matrix"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-valuenow={lowerPanelHeight}
+        aria-valuemin={minLogisticsHeight}
+        aria-valuemax={(stackRef.current?.offsetHeight ?? 800) - minMapHeight - 12}
+        aria-label="Resize map and synchronization matrix"
+        tabIndex={0}
+      >
+        <span className={styles.opsRowHandleLabel}>
+          Resize map / matrix · Map {mapPercent}% · Matrix {100 - mapPercent}%
+        </span>
+      </div>
+
+      <section
+        className={`${styles.opsLowerDock} ${styles.opsLowerDockHarpoon}`}
+        style={{ height: lowerPanelHeight, flexShrink: 0 }}
+        aria-label="Commander synchronization matrix"
+      >
         <section
-          className={styles.opsLowerDock}
-          style={{ height: lowerPanelHeight, flexShrink: 0 }}
-          aria-label="Timeline and synchronization matrix"
+          className={`${styles.opsLogisticsDock} ${styles.opsLogisticsDockHarpoon}`}
+          aria-label="Synchronization matrix"
         >
-          {timeline ? (
-            <div className={styles.opsTimelineDock}>
-              <div className={styles.stackSectionToolbar}>
-                <strong>Event Timeline</strong>
-                <button
-                  type="button"
-                  className={styles.headerButton}
-                  onClick={() => setTimelineCollapsed((value) => !value)}
-                >
-                  {timelineCollapsed ? "Show Timeline" : "Collapse Timeline"}
-                </button>
-              </div>
-              {!timelineCollapsed ? (
-                <div
-                  className={
-                    timelineExpanded
-                      ? styles.opsTimelineBodyExpanded
-                      : styles.opsTimelineBodyCompact
-                  }
-                >
-                  {timeline}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <section className={styles.opsLogisticsDock} aria-label="Synchronization matrix">
-            <div className={styles.panelHeaderRow}>
-              <div className={styles.flowStepHeaderCompact}>
-                <span className={styles.flowNumber}>{logisticsStepNumber ?? "04"}</span>
-                <div>
-                  <h3 className={styles.dashboardTitle}>{logisticsTitle}</h3>
-                  {logisticsDescription ? (
-                    <p className={styles.stackSectionDescription}>{logisticsDescription}</p>
-                  ) : null}
-                </div>
-              </div>
-              <div className={styles.inlineActions}>
-                <button type="button" className={styles.headerButton} onClick={expandMatrixFull}>
-                  Maximize Matrix
-                </button>
-                <button type="button" className={styles.headerButton} onClick={expandMapFull}>
-                  Maximize Map
-                </button>
-              </div>
-            </div>
-            <div className={styles.logisticsMatrixHostDock}>
-              <SyncMatrixPanel {...props} onExpandMatrix={expandMatrixFull} />
-            </div>
-          </section>
+          <div className={styles.logisticsMatrixHostDock}>
+            <SyncMatrixPanel
+              {...props}
+              embedded
+              stepNumber={logisticsStepNumber ?? "04"}
+              matrixSubtitle={logisticsDescription}
+              onExpandMatrix={expandMatrixFull}
+            />
+          </div>
         </section>
-      ) : null}
+      </section>
     </div>
   );
 }
@@ -432,8 +412,6 @@ function HarpoonMapLogisticsStack(props: MapLogisticsStackProps) {
 function DefaultMapLogisticsStack(props: MapLogisticsStackProps) {
   const {
     map,
-    timeline,
-    timelineExpanded = false,
     executionBanner,
     logisticsTitle = "Logistics Matrix",
     selectedCoaLabel,
@@ -526,21 +504,6 @@ function DefaultMapLogisticsStack(props: MapLogisticsStackProps) {
       </div>
 
       {executionBanner && !mapCollapsed ? executionBanner : null}
-
-      {timeline && !mapCollapsed ? (
-        <section className={styles.opsTimelineDock} aria-label="Event timeline">
-          <div className={styles.stackSectionToolbar}>
-            <strong>Event Timeline</strong>
-          </div>
-          <div
-            className={
-              timelineExpanded ? styles.opsTimelineBodyExpanded : styles.opsTimelineBody
-            }
-          >
-            {timeline}
-          </div>
-        </section>
-      ) : null}
 
       {!mapCollapsed && !logisticsCollapsed ? (
         <div

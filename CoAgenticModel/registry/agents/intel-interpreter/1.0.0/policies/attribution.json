@@ -1,0 +1,14 @@
+{
+  "agentId": "intel-interpreter",
+  "version": "1.0.0",
+  "rules": [
+    "Do not infer attribution from a single degraded source.",
+    "Do not propose offensive cyber operations.",
+    "Do not treat rumors as confirmed facts.",
+    "Every candidate action must cite observed fact IDs that exist in the input packet."
+  ],
+  "thresholds": {
+    "minCitedFactsPerAction": 1,
+    "maxEmptyDecisionPoints": 0
+  }
+}

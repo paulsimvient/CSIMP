@@ -1,5 +1,6 @@
 import { reorderCoaCandidates } from "./candidateOrdering";
 import { buildLogisticsPlan, cloneLogisticsPlanForCoa } from "./logistics";
+import { pickDefaultSelectedCoa } from "./pipeline";
 import type { ManualSyncEntry } from "./manualSync";
 import {
   revalidateOperatorWithPipeline,
@@ -20,6 +21,7 @@ import {
   getExecuteBlockers,
   getMatrixOverlay,
   hasOverlayChanges,
+  overlayAfterSuccessfulMaterialization,
   isOperatorCandidate,
   nextForkLabel,
   nextImportedDraftLabel,
@@ -229,6 +231,10 @@ export async function validateOperatorCoaWithPipeline(
         validatedOrderSet: result.orderSet,
       },
     },
+    matrixOverlaysByCoaId: {
+      ...(state.matrixOverlaysByCoaId ?? {}),
+      [coaId]: overlayAfterSuccessfulMaterialization(overlay),
+    },
     preparedExecution: undefined,
   });
 }
@@ -382,7 +388,11 @@ export function validateOperatorCoa(
 
   return reorderCoaCandidates({
     ...state,
-    candidatesById: { ...state.candidatesById, [coaId]: result.candidate },
+    candidatesById: { ...state.candidatesById, [coaId]: result.candidate! },
+    matrixOverlaysByCoaId: {
+      ...(state.matrixOverlaysByCoaId ?? {}),
+      [coaId]: overlayAfterSuccessfulMaterialization(overlay),
+    },
     preparedExecution: undefined,
   });
 }
@@ -451,25 +461,36 @@ export function prepareExecution(
   if (!candidate) return state;
   const overlay = state.matrixOverlaysByCoaId?.[coaId] ?? emptyMatrixOverlay();
 
-  if (
-    candidate.validationStatus === "validated" &&
-    candidate.validatedOrderSet &&
-    candidate.validation?.evidenceSnapshotId
-  ) {
-    const blockers = collectRevisionBlockers(candidate, overlay, ctx);
-    if (blockers.length === 0) {
-      return {
+  if (candidate.validationStatus === "validated") {
+    const materialized = materializeCoaRevision(candidate, overlay, ctx);
+    if (
+      materialized.blockers.length === 0 &&
+      materialized.orderSet &&
+      materialized.validation?.evidenceSnapshotId
+    ) {
+      const working = materialized.candidate ?? candidate;
+      const persistMaterialized =
+        coaOrigin(candidate) === "automated" &&
+        working !== candidate &&
+        working.logisticsPlan.kind === "populated";
+
+      const nextState: CoaState = {
         ...state,
+        ...(persistMaterialized
+          ? { candidatesById: { ...state.candidatesById, [coaId]: working } }
+          : {}),
         preparedExecution: {
           candidateId: coaId,
           revisionId: overlay.revisionId,
           preparedAt: new Date().toISOString(),
           label: candidate.label,
           origin: coaOrigin(candidate),
-          orderSet: candidate.validatedOrderSet,
-          evidenceSnapshotId: candidate.validation.evidenceSnapshotId,
+          orderSet: materialized.orderSet,
+          evidenceSnapshotId: materialized.validation.evidenceSnapshotId,
         },
       };
+
+      return persistMaterialized ? reorderCoaCandidates(nextState) : nextState;
     }
   }
 
@@ -590,9 +611,9 @@ export function prepareAndExecuteCoa(
   };
 }
 
-export function discardOperatorCoa(state: CoaState, coaId: CoaId): CoaState {
+export function removeCoaCandidate(state: CoaState, coaId: CoaId): CoaState {
   const candidate = state.candidatesById[coaId];
-  if (!candidate || !isOperatorCandidate(candidate)) return state;
+  if (!candidate) return state;
 
   const candidatesById = { ...state.candidatesById };
   delete candidatesById[coaId];
@@ -600,17 +621,30 @@ export function discardOperatorCoa(state: CoaState, coaId: CoaId): CoaState {
   const overlays = { ...(state.matrixOverlaysByCoaId ?? {}) };
   delete overlays[coaId];
 
-  return {
+  const candidateOrder = state.candidateOrder.filter((id) => id !== coaId);
+  const ranked = candidateOrder
+    .map((id) => candidatesById[id])
+    .filter((item): item is CoaCandidate => Boolean(item));
+  const nextSelected =
+    state.selectedCoaId === coaId
+      ? (pickDefaultSelectedCoa(ranked)?.id ?? ranked[0]?.id)
+      : state.selectedCoaId;
+
+  return reorderCoaCandidates({
     ...state,
     candidatesById,
-    candidateOrder: state.candidateOrder.filter((id) => id !== coaId),
+    candidateOrder,
     matrixOverlaysByCoaId: overlays,
-    selectedCoaId: state.selectedCoaId === coaId ? undefined : state.selectedCoaId,
+    selectedCoaId: nextSelected,
     preparedExecution:
       state.preparedExecution?.candidateId === coaId ? undefined : state.preparedExecution,
     executedSnapshot:
       state.executedSnapshot?.candidateId === coaId ? undefined : state.executedSnapshot,
-  };
+  });
+}
+
+export function discardOperatorCoa(state: CoaState, coaId: CoaId): CoaState {
+  return removeCoaCandidate(state, coaId);
 }
 
 export function rebaseOperatorCoa(

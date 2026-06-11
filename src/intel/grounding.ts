@@ -12,6 +12,10 @@ import type {
   ObservedFact,
   ScenarioPacket,
 } from "./types";
+import {
+  DEFAULT_GROUNDING_POLICY,
+  type GroundingPolicyConfig,
+} from "./groundingPolicy";
 
 // ─── Grounding validator ──────────────────────────────────────────────────────
 //
@@ -29,29 +33,18 @@ import type {
 //   5. Inference confidence requires whyNotHigher when < "high".
 
 // Forbidden words in claims and rationale — see architecture principle 6
-const FORBIDDEN_HEDGE_WORDS = [
-  "proves",
-  "confirms",
-  "shows",
-  "demonstrates",
-  "establishes",
-  "certainly",
-  "definitely",
-  "confirmed that adversary",
-  "shows adversary",
-  "shows the adversary",
-  "confirms the attack",
-  "proves the attack",
-];
-
-// Allowed hedge phrases (for documentation — not enforced as whitelist,
-// since the forbidden list is the practical check)
-// "may indicate", "is consistent with", "could suggest", "requires confirmation"
+// Overridden by registry policy when provided to validateGrounding().
 
 export function validateGrounding(
   packet: ScenarioPacket,
-  interpretation: LLMInterpretation
+  interpretation: LLMInterpretation,
+  policy: GroundingPolicyConfig = DEFAULT_GROUNDING_POLICY
 ): GroundingValidationResult {
+  if (!policy.requiresGroundingValidation) {
+    return passthroughGrounding(packet, interpretation);
+  }
+
+  const forbiddenHedgeWords = policy.forbiddenHedgeWords;
   const knownFactIds = new Set(packet.observedFacts.map((f) => f.id));
   const knownAssets = new Set(packet.knownAssets.map((a) => a.toLowerCase()));
   const knownAuthorities = packet.knownAuthorities ?? {};
@@ -191,10 +184,18 @@ export function validateGrounding(
     );
 
     if (validCitedFacts.length === 0) {
+      if (policy.rejectUncitedActions) {
+        issues.push({
+          kind: "unsupported-action",
+          actionId: action.id,
+          reason: "No cited fact IDs reference known observed facts",
+        });
+      }
+    } else if (validCitedFacts.length < policy.minCitedFactsPerAction) {
       issues.push({
         kind: "unsupported-action",
         actionId: action.id,
-        reason: "No cited fact IDs reference known observed facts",
+        reason: `Action cites ${validCitedFacts.length} fact(s); policy requires at least ${policy.minCitedFactsPerAction}`,
       });
     }
 
@@ -339,7 +340,7 @@ export function validateGrounding(
   ];
 
   for (const { text, location, actionId, decisionPointId, optionId } of textSources) {
-    for (const word of FORBIDDEN_HEDGE_WORDS) {
+    for (const word of forbiddenHedgeWords) {
       if (isOverclaim(text, word)) {
         issues.push({
           kind: "hedge-violation",
@@ -418,6 +419,14 @@ export function validateGrounding(
       }
     }
   }
+
+  applyRegistryAttributionRules(
+    packet,
+    interpretation,
+    policy.attributionRules,
+    issues,
+    flaggedInferenceClaims
+  );
 
   // ── 5. Track unused facts ───────────────────────────────────────────────────
   const citedIds = new Set([
@@ -564,6 +573,91 @@ export function extractValidatedDecisionPoints(
         })),
     }))
     .filter((dp) => dp.options.length > 0);
+}
+
+function passthroughGrounding(
+  packet: ScenarioPacket,
+  interpretation: LLMInterpretation
+): GroundingValidationResult {
+  return {
+    valid: true,
+    hasIssues: false,
+    blockingIssues: 0,
+    reviewIssues: 0,
+    usableForPlanning: true,
+    issues: [],
+    evidenceConflicts: [],
+    unusedFacts: packet.observedFacts.map((f) => f.id),
+    validatedActionIds: interpretation.candidateActions.map((a) => a.id),
+    validatedDecisionPointIds: interpretation.decisionPoints.map((dp) => dp.id),
+  };
+}
+
+function isAttributionClaim(text: string): boolean {
+  const lower = text.toLowerCase();
+  return (
+    lower.includes("adversary") ||
+    lower.includes("attribution") ||
+    lower.includes("attributed to") ||
+    lower.includes("actor responsible") ||
+    lower.includes("confirmed attack")
+  );
+}
+
+function ruleRequiresMultiSource(rule: string): boolean {
+  const lower = rule.toLowerCase();
+  return (
+    (lower.includes("single") && (lower.includes("source") || lower.includes("degraded"))) ||
+    (lower.includes("corroboration") && lower.includes("two")) ||
+    lower.includes("two independent sources")
+  );
+}
+
+/** Enforce registry attribution.json rules beyond packet constraint strings. */
+function applyRegistryAttributionRules(
+  packet: ScenarioPacket,
+  interpretation: LLMInterpretation,
+  rules: string[],
+  issues: GroundingIssue[],
+  flaggedInferenceClaims: Set<string>
+): void {
+  const multiSourceRules = rules.filter(ruleRequiresMultiSource);
+  if (multiSourceRules.length === 0) return;
+
+  for (const inference of interpretation.inferences) {
+    if (!isAttributionClaim(inference.claim)) continue;
+    const validFacts = inference.supportingFacts.filter((id) =>
+      packet.observedFacts.some((f) => f.id === id)
+    );
+    if (validFacts.length < 2 && inference.confidence === "high") {
+      flaggedInferenceClaims.add(inference.claim);
+      for (const rule of multiSourceRules) {
+        issues.push({
+          kind: "constraint-violation",
+          constraint: rule,
+          foundIn: `inference: "${inference.claim.slice(0, 60)}"`,
+        });
+      }
+    }
+  }
+
+  for (const action of interpretation.candidateActions) {
+    const text = `${action.description} ${action.rationale}`.toLowerCase();
+    if (!isAttributionClaim(text)) continue;
+    const validFacts = action.citedFacts.filter((id) =>
+      packet.observedFacts.some((f) => f.id === id)
+    );
+    if (validFacts.length < 2) {
+      for (const rule of multiSourceRules) {
+        issues.push({
+          kind: "constraint-violation",
+          constraint: rule,
+          foundIn: `action ${action.id}`,
+          actionId: action.id,
+        });
+      }
+    }
+  }
 }
 
 // ─── Internal utilities ───────────────────────────────────────────────────────

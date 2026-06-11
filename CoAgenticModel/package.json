@@ -1,0 +1,23 @@
+{
+  "name": "co-agentic-model",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Supervised agent-evolution pipeline for CODA2 — propose, validate, evaluate, approve, never self-promote.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "eval:agents": "tsx scripts/eval-agents.ts",
+    "evolution:validate-proposal": "tsx scripts/validate-proposal.ts",
+    "evolution:process-proposal": "tsx scripts/process-proposal.ts"
+  },
+  "dependencies": {
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.6"
+  }
+}

@@ -13,6 +13,9 @@ import {
   buildSyncMatrixModel,
   formatMatrixTick,
   formatMissionTick,
+  formatRelativeColumnTick,
+  resolveNowColumnIndex,
+  playheadWithinColumnRatio,
   formatTaskCardPrimary,
   formatTaskCardSecondary,
   syncGridRowLabel,
@@ -35,6 +38,11 @@ import {
 } from "../../coa/manualSync";
 import { originLabel } from "../../coa/manualSync";
 import type { ObservedFact } from "../../intel/types";
+import type { MessageTrafficItem } from "../ops/types";
+import {
+  resolveTimelineEventOffsetSec,
+  timelineEventShape,
+} from "../ops/timelineEventPlacement";
 import type { MatrixQualityContext } from "../../coa/matrixQuality";
 import type { LogisticsEmptyContext } from "@components/LogisticsMatrix";
 import { SyncTaskEditor } from "./SyncTaskEditor";
@@ -84,8 +92,10 @@ type SyncMatrixProps = {
   /** When set, the section containing this row is expanded for authoring. */
   autoExpandRowKey?: SyncGridRowKey;
   onExecute?: () => void;
+  onTogglePlayback?: () => void;
   canExecute?: boolean;
   executing?: boolean;
+  executionCommitted?: boolean;
   executeHint?: string;
   executeBlocker?: string;
   onValidate?: () => void;
@@ -93,10 +103,36 @@ type SyncMatrixProps = {
   validationFeedback?: { kind: "success" | "error"; messages: string[] };
   executionActiveBarIds?: Set<string>;
   executionCompletedBarIds?: Set<string>;
-  executionPlaybackPhase?: "playing" | "committed";
+  executionPlaybackPhase?: "playing" | "paused" | "committed";
+  executionPlayheadSec?: number;
+  onTimelineSeek?: (timeSec: number, target: MatrixTimelineSeekTarget) => void;
+  onMatrixFocus?: () => void;
+  focusedSectionId?: string;
+  timelineEvents?: MessageTrafficItem[];
+  selectedTimelineEventId?: string;
+  onTimelineEventSelect?: (event: MessageTrafficItem) => void;
   /** When true, matrix task editing is handled outside this component (e.g. Inspector panel). */
   externalEditor?: boolean;
+  /** Embedded in map stack — tighter chrome, no duplicate outer header. */
+  embedded?: boolean;
+  stepNumber?: string;
+  matrixSubtitle?: string;
 };
+
+export type MatrixTimelineSeekTarget = {
+  sectionId?: string;
+  rowKey?: SyncGridRowKey;
+};
+
+function seekTimeFromTrackClick(
+  event: React.MouseEvent<HTMLElement>,
+  horizonSec: number,
+  tickIntervalSec: number
+): number {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+  return snapSecToTick(ratio * horizonSec, tickIntervalSec);
+}
 
 export function SyncMatrix({
   plan,
@@ -122,8 +158,10 @@ export function SyncMatrix({
   observedFacts = [],
   autoExpandRowKey,
   onExecute,
+  onTogglePlayback,
   canExecute = false,
   executing = false,
+  executionCommitted = false,
   executeHint,
   executeBlocker,
   onValidate,
@@ -132,14 +170,27 @@ export function SyncMatrix({
   executionActiveBarIds,
   executionCompletedBarIds,
   executionPlaybackPhase,
+  executionPlayheadSec,
   externalEditor = false,
+  embedded = false,
+  stepNumber,
+  matrixSubtitle,
+  onTimelineSeek,
+  onMatrixFocus,
+  focusedSectionId,
+  timelineEvents = [],
+  selectedTimelineEventId,
+  onTimelineEventSelect,
 }: SyncMatrixProps) {
+  const scrollHostRef = useRef<HTMLDivElement>(null);
   const [timeScale, setTimeScale] = useState<{
     unit?: MatrixTimeUnit;
     tickIntervalSec?: number;
   }>({});
   const [zoom, setZoom] = useState(1);
-  const [density, setDensity] = useState<"compact" | "expanded">("expanded");
+  const [density, setDensity] = useState<"compact" | "expanded">(
+    embedded ? "compact" : "expanded"
+  );
   const [selectedId, setSelectedId] = useState<string | undefined>(selectedBarId);
   const [editingBar, setEditingBar] = useState<SyncMatrixBar | null>(null);
   const [dependencyPaths, setDependencyPaths] = useState<string[]>([]);
@@ -198,7 +249,7 @@ export function SyncMatrix({
     if (manualEntries.length > 0) {
       return buildManualOnlySyncMatrix(manualEntries, baseInput);
     }
-    return null;
+    return buildManualOnlySyncMatrix([], baseInput);
   }, [
     plan,
     timeScale.tickIntervalSec,
@@ -261,7 +312,17 @@ export function SyncMatrix({
     else barRefs.current.delete(barId);
   }, []);
 
-  const visibleRows = useMemo(() => model?.rows ?? [], [model]);
+  const visibleRows = useMemo(() => model.rows, [model]);
+
+  const placedTimelineEvents = useMemo(
+    () =>
+      timelineEvents.map((item, index) => ({
+        item,
+        offsetSec: resolveTimelineEventOffsetSec(item, index),
+        shape: timelineEventShape(item),
+      })),
+    [timelineEvents]
+  );
 
   const sectionTaskCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -353,6 +414,11 @@ export function SyncMatrix({
   }, [autoExpandRowKey]);
 
   useEffect(() => {
+    if (!focusedSectionId) return;
+    setSectionExpandedOverrides((prev) => ({ ...prev, [focusedSectionId]: true }));
+  }, [focusedSectionId]);
+
+  useEffect(() => {
     setSelectedId(selectedBarId);
   }, [selectedBarId]);
 
@@ -417,11 +483,16 @@ export function SyncMatrix({
 
     const updatePaths = () => {
       const gridRect = grid.getBoundingClientRect();
+      const tickCountForLayout = model.ticks.length - 1;
+      const measuredTickWidth =
+        tickCountForLayout > 0
+          ? Math.max(0, (gridRect.width - 220) / tickCountForLayout)
+          : 96 * zoom;
       const paths = buildDependencyPaths({
         rows: visibleRows,
         tickIntervalSec: model.tickIntervalSec,
-        tickCount: model.ticks.length - 1,
-        tickWidth: 96 * zoom,
+        tickCount: tickCountForLayout,
+        tickWidth: measuredTickWidth,
         labelWidth: 220,
         density,
         gridRect,
@@ -445,36 +516,81 @@ export function SyncMatrix({
     };
   }, [model, visibleRows, zoom, density, displayRows]);
 
-  if (!model) {
-    return (
-      <div className={styles.empty}>
-        <strong>Commander&apos;s Synchronization Matrix</strong>
-        <span>Generate a COA or use the Inspector to create matrix tasks.</span>
-        {onAddTask && (
-          <button type="button" className={styles.toolBtn} onClick={onAddTask}>
-            + Add Task
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  const tickCols = model.ticks.slice(0, -1);
+  const tickCols = model?.ticks.slice(0, -1) ?? [];
   const tickCount = tickCols.length;
   const labelWidth = 220;
-  const tickWidth = 96 * zoom;
-  const gridWidth = labelWidth + tickWidth * tickCount;
-  const gridColumns = `${labelWidth}px repeat(${tickCount}, ${tickWidth}px)`;
+  const minTickWidth = 96 * zoom;
+  const tickColTemplate = `repeat(${tickCount}, minmax(${minTickWidth}px, 1fr))`;
+  const gridColumns = `${labelWidth}px ${tickColTemplate}`;
+  const minGridWidth = labelWidth + tickCount * minTickWidth;
+  const timelineSpanSec = model?.horizonSec ?? tickCount * (model?.tickIntervalSec ?? 60);
+  const relativeTimelineActive = executionPlayheadSec != null;
+  const nowColumnIndex =
+    model && relativeTimelineActive
+      ? resolveNowColumnIndex(
+          executionPlayheadSec,
+          model.tickIntervalSec,
+          tickCount
+        )
+      : null;
+  const playheadColumnRatio =
+    model && nowColumnIndex != null
+      ? playheadWithinColumnRatio(
+          executionPlayheadSec ?? 0,
+          nowColumnIndex,
+          model.tickIntervalSec
+        )
+      : null;
+  const playheadLabel =
+    model && relativeTimelineActive ? "H+00" : null;
+  const axisTickLabel = (tickIndex: number, offsetSec: number) =>
+    nowColumnIndex != null
+      ? formatRelativeColumnTick(tickIndex, nowColumnIndex, model!.tickIntervalSec)
+      : formatMissionTick(offsetSec);
+
+  useEffect(() => {
+    if (
+      nowColumnIndex == null ||
+      playheadColumnRatio == null ||
+      !scrollHostRef.current ||
+      !gridRef.current
+    ) {
+      return;
+    }
+    const host = scrollHostRef.current;
+    const grid = gridRef.current;
+    const timelineWidth = Math.max(0, grid.offsetWidth - labelWidth);
+    const columnWidth = tickCount > 0 ? timelineWidth / tickCount : timelineWidth;
+    const playheadLeftPx =
+      labelWidth + nowColumnIndex * columnWidth + playheadColumnRatio * columnWidth;
+    const viewLeft = host.scrollLeft;
+    const viewRight = viewLeft + host.clientWidth;
+    const margin = 80;
+    if (playheadLeftPx < viewLeft + margin || playheadLeftPx > viewRight - margin) {
+      host.scrollTo({
+        left: Math.max(0, playheadLeftPx - host.clientWidth * 0.35),
+        behavior: "smooth",
+      });
+    }
+  }, [nowColumnIndex, playheadColumnRatio, labelWidth, tickCount, minGridWidth]);
+
+  if (!model) {
+    return null;
+  }
 
   const matrixClass =
     density === "compact"
-      ? `${styles.matrix} ${styles.matrixCompact}`
-      : `${styles.matrix} ${styles.matrixExpanded}`;
+      ? `${styles.matrix} ${styles.matrixCompact}${embedded ? ` ${styles.matrixEmbedded}` : ""}`
+      : `${styles.matrix} ${styles.matrixExpanded}${embedded ? ` ${styles.matrixEmbedded}` : ""}`;
+
+  const showAdvancedToolbar = !embedded;
 
   const handleCellClick = (
     row: SyncMatrixRow,
     event: React.MouseEvent<HTMLDivElement>
   ) => {
+    event.stopPropagation();
+    event.preventDefault();
     if (!onCreateManualAtCell || row.kind !== "task") return;
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = (event.clientX - rect.left) / rect.width;
@@ -483,14 +599,35 @@ export function SyncMatrix({
     onCreateManualAtCell(row.id as SyncGridRowKey, startSec);
   };
 
+  const handleTrackSeek = (
+    event: React.MouseEvent<HTMLElement>,
+    target: MatrixTimelineSeekTarget
+  ) => {
+    if (!onTimelineSeek) return;
+    if ((event.target as HTMLElement).closest("button")) return;
+    const timeSec = seekTimeFromTrackClick(event, model.horizonSec, model.tickIntervalSec);
+    onTimelineSeek(timeSec, target);
+    onMatrixFocus?.();
+  };
+
   return (
     <div className={matrixClass}>
       <div
-        className={styles.toolbar}
+        className={embedded ? `${styles.toolbar} ${styles.toolbarEmbedded}` : styles.toolbar}
         onPointerDown={(event) => event.stopPropagation()}
       >
-        <span className={styles.toolbarTitle}>Commander&apos;s Synchronization Matrix</span>
-        {coaLabel && <span className={styles.toolbarCoa}>COA: {coaLabel}</span>}
+        <div className={styles.toolbarLead}>
+          {stepNumber ? <span className={styles.toolbarStep}>{stepNumber}</span> : null}
+          <span className={styles.toolbarTitle}>
+            {embedded ? "Sync Matrix" : "Commander&apos;s Synchronization Matrix"}
+          </span>
+          {coaLabel ? <span className={styles.toolbarCoa}>{coaLabel}</span> : null}
+          {embedded && matrixSubtitle ? (
+            <span className={styles.toolbarSubtitle} title={matrixSubtitle}>
+              {matrixSubtitle}
+            </span>
+          ) : null}
+        </div>
         <div className={styles.toolbarGroup}>
           {(onValidate || onExecute) && (
             <div className={styles.toolbarCommitActions}>
@@ -500,7 +637,7 @@ export function SyncMatrix({
                   className={styles.toolBtnValidate}
                   onClick={onValidate}
                   disabled={validating}
-                  title="Check visible matrix tasks for blocking issues before execution"
+                  title="Check matrix tasks and validate operator COA drafts before execution"
                 >
                   {validating ? "Validating…" : "Validate"}
                 </button>
@@ -509,23 +646,47 @@ export function SyncMatrix({
                 <button
                   type="button"
                   className={styles.toolBtnExecute}
-                  onClick={onExecute}
-                  disabled={!canExecute && !executing}
-                  title={executeHint ?? "Prepare and execute the selected COA revision"}
+                  onClick={
+                    executionCommitted && onTogglePlayback
+                      ? onTogglePlayback
+                      : executing && onTogglePlayback
+                        ? onTogglePlayback
+                        : onExecute
+                  }
+                  disabled={
+                    executing || executionCommitted
+                      ? !onTogglePlayback
+                      : !canExecute
+                  }
+                  title={
+                    executing
+                      ? "Pause or resume playback (Space)"
+                      : executionCommitted
+                        ? "Replay committed order"
+                        : (executeHint ?? "Prepare and execute the selected COA revision")
+                  }
                 >
-                  {executing ? "Executing…" : "Execute"}
+                  {executing
+                    ? executionPlaybackPhase === "paused"
+                      ? "Resume"
+                      : "Pause"
+                    : executionCommitted
+                      ? "Replay"
+                      : "Execute"}
                 </button>
               )}
-              {onExecute && !canExecute && !executing && executeBlocker ? (
+              {onExecute && !canExecute && !executing && !executionCommitted && executeBlocker ? (
                 <span className={styles.executeBlocker}>{executeBlocker}</span>
               ) : null}
               {onExecute && executing ? (
                 <span className={styles.executionProgress} role="status" aria-live="polite">
                   {executionPlaybackPhase === "playing" && executionActiveBarIds?.size
-                    ? `Activating task ${executionActiveBarIds.size}…`
-                    : executionPlaybackPhase === "committed"
-                      ? "Committed"
-                      : "Executing…"}
+                    ? `NOW · H+00 · task ${executionActiveBarIds.size} active`
+                    : executionPlaybackPhase === "paused"
+                      ? `NOW · H+00 · paused`
+                      : executionPlaybackPhase === "committed"
+                        ? "Committed"
+                        : "Executing…"}
                 </span>
               ) : null}
             </div>
@@ -535,41 +696,45 @@ export function SyncMatrix({
               + Add Task
             </button>
           )}
-          {onExpandMatrix && (
+          {showAdvancedToolbar && onExpandMatrix && (
             <button type="button" className={styles.toolBtn} onClick={onExpandMatrix} title="Expand matrix panel">
               Expand ⛶
             </button>
           )}
-          <button
-            type="button"
-            className={styles.toolBtn}
-            onClick={expandAllSections}
-            title="Expand every operational section"
-          >
-            Expand all
-          </button>
-          <button
-            type="button"
-            className={styles.toolBtn}
-            onClick={collapseEmptySections}
-            title="Expand only sections with tasks"
-          >
-            Populated only
-          </button>
-          <button
-            type="button"
-            className={density === "compact" ? styles.toolBtnActive : styles.toolBtn}
-            onClick={() => setDensity("compact")}
-          >
-            Compact
-          </button>
-          <button
-            type="button"
-            className={density === "expanded" ? styles.toolBtnActive : styles.toolBtn}
-            onClick={() => setDensity("expanded")}
-          >
-            Expand rows
-          </button>
+          {showAdvancedToolbar ? (
+            <>
+              <button
+                type="button"
+                className={styles.toolBtn}
+                onClick={expandAllSections}
+                title="Expand every operational section"
+              >
+                Expand all
+              </button>
+              <button
+                type="button"
+                className={styles.toolBtn}
+                onClick={collapseEmptySections}
+                title="Expand only sections with tasks"
+              >
+                Populated only
+              </button>
+              <button
+                type="button"
+                className={density === "compact" ? styles.toolBtnActive : styles.toolBtn}
+                onClick={() => setDensity("compact")}
+              >
+                Compact
+              </button>
+              <button
+                type="button"
+                className={density === "expanded" ? styles.toolBtnActive : styles.toolBtn}
+                onClick={() => setDensity("expanded")}
+              >
+                Expand rows
+              </button>
+            </>
+          ) : null}
           <div className={styles.granularitySelect}>
             <span className={styles.granularityLabel} id="matrix-scale-label">
               Scale
@@ -618,6 +783,12 @@ export function SyncMatrix({
           >
             Zoom +
           </button>
+          {embedded ? (
+            <span className={styles.toolbarStats}>
+              {model.actionCount} task{model.actionCount !== 1 ? "s" : ""} ·{" "}
+              {formatMissionTick(model.horizonSec)}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -632,9 +803,16 @@ export function SyncMatrix({
         >
           <strong>
             {validationFeedback.kind === "success"
-              ? "Matrix ready"
-              : "Matrix validation issues"}
+              ? "Validation passed"
+              : executing
+                ? "Draft tasks — not in current playback"
+                : "Validation issues"}
           </strong>
+          {executing && validationFeedback.kind === "error" ? (
+            <p className={styles.validatePlaybackNote}>
+              Playback is running the committed order. Complete these tasks before the next execute.
+            </p>
+          ) : null}
           <ul>
             {validationFeedback.messages.map((message) => (
               <li key={message}>{message}</li>
@@ -644,28 +822,137 @@ export function SyncMatrix({
       ) : null}
 
       <div
-        className={styles.scrollHost}
+        ref={scrollHostRef}
+        className={embedded ? `${styles.scrollHost} ${styles.scrollHostEmbedded}` : styles.scrollHost}
         tabIndex={0}
+        onFocus={() => onMatrixFocus?.()}
         onKeyDown={handleMatrixKeyDown}
         aria-label="Synchronization matrix task grid. Select a task, then use arrow keys to adjust timing."
       >
-        <div className={styles.gridWrap} ref={gridRef}>
+        <div
+          className={styles.gridWrap}
+          ref={gridRef}
+          style={{ minWidth: minGridWidth }}
+        >
+          {playheadLabel && nowColumnIndex != null && playheadColumnRatio != null ? (
+            <div
+              className={styles.playheadGridOverlay}
+              style={{ gridTemplateColumns: gridColumns }}
+              aria-hidden
+            >
+              <div className={styles.playheadCornerSpacer} />
+              {tickCols.map((tick, tickIndex) => (
+                <div
+                  key={`playhead-col-${tick.offsetSec}`}
+                  className={
+                    tickIndex === nowColumnIndex
+                      ? styles.playheadColumnCell
+                      : styles.playheadColumnSlot
+                  }
+                >
+                  {tickIndex === nowColumnIndex ? (
+                    <div
+                      className={styles.executionPlayhead}
+                      style={{ left: `${playheadColumnRatio * 100}%` }}
+                      role="presentation"
+                      aria-label={`Execution playhead at ${playheadLabel}`}
+                    >
+                      <span className={styles.executionPlayheadLabel}>{playheadLabel}</span>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
           <svg className={styles.dependencyLayer} aria-hidden>
             {dependencyPaths.map((path, index) => (
               <path key={index} d={path} className={styles.dependencyLine} />
             ))}
           </svg>
-          <div className={styles.grid} style={{ width: gridWidth }}>
+          <div className={styles.grid} style={{ width: "100%", minWidth: minGridWidth }}>
             <div
               className={`${styles.sheetRow} ${styles.matrixHeaderRow}`}
               style={{ gridTemplateColumns: gridColumns }}
             >
-              <div className={styles.cornerCell}>Operational Function</div>
-              {tickCols.map((tick) => (
-                <div key={tick.offsetSec} className={styles.timeHeader}>
-                  {formatMissionTick(tick.offsetSec)}
-                </div>
+              <div className={styles.cornerCell}>
+                <span>Operational Function</span>
+                {playheadLabel ? (
+                  <span className={styles.playheadNowBadge} aria-live="polite">
+                    NOW · {playheadLabel}
+                  </span>
+                ) : null}
+              </div>
+              {tickCols.map((tick, tickIndex) => (
+                <button
+                  key={tick.offsetSec}
+                  type="button"
+                  className={
+                    tickIndex === nowColumnIndex
+                      ? `${styles.timeHeader} ${styles.timeHeaderPlayhead} ${styles.timeHeaderButton}`
+                      : `${styles.timeHeader} ${styles.timeHeaderButton}`
+                  }
+                  onClick={() => onTimelineSeek?.(tick.offsetSec, {})}
+                  title={`Seek to ${axisTickLabel(tickIndex, tick.offsetSec)}`}
+                >
+                  {axisTickLabel(tickIndex, tick.offsetSec)}
+                </button>
               ))}
+            </div>
+
+            <div
+              className={styles.sheetRow}
+              style={{ gridTemplateColumns: gridColumns }}
+            >
+              <div className={styles.rowHeaderMeta}>EVENTS</div>
+              <div
+                className={styles.eventsTrack}
+                style={
+                  {
+                    gridColumn: `2 / span ${tickCount}`,
+                    gridTemplateColumns: tickColTemplate,
+                  } as CSSProperties
+                }
+                onClick={(event) => handleTrackSeek(event, {})}
+                title="Click timeline to seek"
+              >
+                {tickCols.map((tick) => (
+                  <div key={`event-grid-${tick.offsetSec}`} className={styles.gridCell} />
+                ))}
+                {placedTimelineEvents.map(({ item, offsetSec, shape }, eventIndex) => {
+                  const leftPercent = Math.min(
+                    100,
+                    Math.max(0, (offsetSec / timelineSpanSec) * 100)
+                  );
+                  const selected = selectedTimelineEventId === item.id;
+                  const severityClass =
+                    item.severity === "alert"
+                      ? styles.eventMarkerAlert
+                      : item.severity === "warn"
+                        ? styles.eventMarkerWarn
+                        : styles.eventMarkerInfo;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={[
+                        shape === "block" ? styles.eventBlock : styles.eventDot,
+                        severityClass,
+                        selected ? styles.eventMarkerSelected : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      style={{
+                        left: `${leftPercent}%`,
+                        top: 4 + (eventIndex % 3) * 7,
+                      }}
+                      title={item.text}
+                      aria-label={`${item.kind}: ${item.text}`}
+                      aria-pressed={selected}
+                      onClick={() => onTimelineEventSelect?.(item)}
+                    />
+                  );
+                })}
+              </div>
             </div>
 
             {displayRows.map((row) => {
@@ -674,12 +961,14 @@ export function SyncMatrix({
                 const taskCount = sectionId ? (sectionTaskCounts.get(sectionId) ?? 0) : 0;
                 const expanded = sectionId ? isSectionExpanded(sectionId) : true;
                 const pinned = sectionId ? dependencyLinkedSections.has(sectionId) : false;
+                const sectionFocused = Boolean(sectionId && focusedSectionId === sectionId);
                 return (
                   <div
                     key={row.id}
                     className={[
                       styles.sectionRow,
                       expanded ? styles.sectionRowExpanded : styles.sectionRowCollapsed,
+                      sectionFocused ? styles.sectionRowFocused : "",
                     ]
                       .filter(Boolean)
                       .join(" ")}
@@ -712,6 +1001,10 @@ export function SyncMatrix({
                     <div
                       className={styles.sectionBand}
                       style={{ gridColumn: `2 / span ${tickCount}` }}
+                      onClick={(event) => {
+                        if (sectionId) handleTrackSeek(event, { sectionId });
+                      }}
+                      title="Click timeline to seek"
                     >
                       {!expanded && taskCount > 0 ? (
                         <span className={styles.sectionCollapsedHint}>
@@ -755,7 +1048,7 @@ export function SyncMatrix({
                       style={
                         {
                           gridColumn: `2 / span ${tickCount}`,
-                          gridTemplateColumns: `repeat(${tickCount}, ${tickWidth}px)`,
+                          gridTemplateColumns: tickColTemplate,
                         } as CSSProperties
                       }
                     >
@@ -796,7 +1089,14 @@ export function SyncMatrix({
               return (
                 <div
                   key={row.id}
-                  className={styles.sheetRow}
+                  className={[
+                    styles.sheetRow,
+                    row.sectionId && focusedSectionId === row.sectionId
+                      ? styles.taskRowFocused
+                      : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   style={{ gridTemplateColumns: gridColumns }}
                 >
                   <div
@@ -813,11 +1113,17 @@ export function SyncMatrix({
                       {
                         gridColumn: `2 / span ${tickCount}`,
                         gridRow: 1,
-                        gridTemplateColumns: `repeat(${tickCount}, ${tickWidth}px)`,
+                        gridTemplateColumns: tickColTemplate,
                       } as CSSProperties
                     }
+                    onClick={(event) =>
+                      handleTrackSeek(event, {
+                        sectionId: row.sectionId,
+                        rowKey: row.id as SyncGridRowKey,
+                      })
+                    }
                     onDoubleClick={(event) => handleCellClick(row, event)}
-                    title="Double-click to add a task · drag card horizontally for time · vertically to change row"
+                    title="Click to seek timeline · double-click to add a task · drag card horizontally for time · vertically to change row"
                   >
                     {tickCols.map((tick) => (
                       <div key={tick.offsetSec} className={styles.gridCell} />
@@ -835,6 +1141,7 @@ export function SyncMatrix({
                         onSelect={() => {
                           setSelectedId(bar.id);
                           onBarSelect?.(bar);
+                          onMatrixFocus?.();
                         }}
                         onOpenEditor={() => {
                           if (!externalEditor) setEditingBar(bar);
@@ -850,33 +1157,43 @@ export function SyncMatrix({
         </div>
       </div>
 
-      <div className={styles.legend}>
-        <span className={`${styles.legendPill} ${styles.statusPlanned}`}>Planned</span>
-        <span className={`${styles.legendPill} ${styles.statusContingent}`}>Contingent</span>
-        <span className={`${styles.legendPill} ${styles.statusBlocked}`}>Blocked</span>
-        <span className={styles.legendOrigin}>
-          Drag ↔ time · ↕ row · Click or Enter to edit · ←/→ nudge · Shift+←/→ resize duration
-        </span>
-      </div>
+      {!embedded ? (
+        <div className={styles.legend}>
+          {playheadLabel ? (
+            <span className={styles.legendPlayhead}>
+              <span className={styles.legendPlayheadMark} aria-hidden />
+              Playhead · {playheadLabel}
+            </span>
+          ) : null}
+          <span className={`${styles.legendPill} ${styles.statusPlanned}`}>Planned</span>
+          <span className={`${styles.legendPill} ${styles.statusContingent}`}>Contingent</span>
+          <span className={`${styles.legendPill} ${styles.statusBlocked}`}>Blocked</span>
+          <span className={styles.legendOrigin}>
+            Drag ↔ time · ↕ row · Click or Enter to edit · ←/→ nudge · Shift+←/→ resize duration
+          </span>
+        </div>
+      ) : null}
 
-      <div className={styles.footer}>
-        <span>
-          {model.actionCount} task{model.actionCount !== 1 ? "s" : ""} · {manualEntries.length}{" "}
-          manual ·{" "}
-          {[...sectionTaskCounts.entries()].filter(([, count]) => count > 0).length} populated
-          section
-          {[...sectionTaskCounts.entries()].filter(([, count]) => count > 0).length !== 1
-            ? "s"
-            : ""}
-        </span>
-        <span>
-          {MATRIX_TIME_UNIT_OPTIONS.find((opt) => opt.unit === activeTimeUnit)?.label ?? "Minutes"}{" "}
-          · step{" "}
-          {tickStepOptions.find((opt) => opt.sec === resolvedTickIntervalSec)?.label ??
-            formatMatrixTick(resolvedTickIntervalSec, resolvedTickIntervalSec)}{" "}
-          · horizon {formatMissionTick(model.horizonSec)}
-        </span>
-      </div>
+      {!embedded ? (
+        <div className={styles.footer}>
+          <span>
+            {model.actionCount} task{model.actionCount !== 1 ? "s" : ""} · {manualEntries.length}{" "}
+            manual ·{" "}
+            {[...sectionTaskCounts.entries()].filter(([, count]) => count > 0).length} populated
+            section
+            {[...sectionTaskCounts.entries()].filter(([, count]) => count > 0).length !== 1
+              ? "s"
+              : ""}
+          </span>
+          <span>
+            {MATRIX_TIME_UNIT_OPTIONS.find((opt) => opt.unit === activeTimeUnit)?.label ?? "Minutes"}{" "}
+            · step{" "}
+            {tickStepOptions.find((opt) => opt.sec === resolvedTickIntervalSec)?.label ??
+              formatMatrixTick(resolvedTickIntervalSec, resolvedTickIntervalSec)}{" "}
+            · horizon {formatMissionTick(model.horizonSec)}
+          </span>
+        </div>
+      ) : null}
 
       {editingBar && !externalEditor && (
         <SyncTaskEditor

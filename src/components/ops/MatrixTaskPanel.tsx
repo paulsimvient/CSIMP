@@ -167,6 +167,10 @@ export function MatrixTaskPanel({
       setEndTick(formatMatrixTick(draft.startSec + tickIntervalSec, tickIntervalSec));
       setRowKey(draft.rowKey);
       setRowKeyTouched(false);
+      if (draft.actionVerb) {
+        composerRef.current.setAction(draft.actionVerb);
+        setSelectedActionId(`verb:${draft.actionVerb.toLowerCase()}`);
+      }
     } else {
       setStartSec(0);
       setStartTick(formatMatrixTick(0, tickIntervalSec));
@@ -354,7 +358,8 @@ export function MatrixTaskPanel({
           </>
         ) : draft ? (
           <>
-            New task at <strong>{formatMatrixRowOption(draft.rowKey)}</strong> ·{" "}
+            <strong>{draft.actionVerb ?? "Task"}</strong> at{" "}
+            <strong>{formatMatrixRowOption(draft.rowKey)}</strong> ·{" "}
             <strong>{formatMatrixTick(draft.startSec, tickIntervalSec)}</strong>
           </>
         ) : (

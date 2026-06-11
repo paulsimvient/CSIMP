@@ -1,0 +1,7 @@
+{
+  "agentId": "intel-interpreter",
+  "version": "1.0.0",
+  "requiresGroundingValidation": true,
+  "rejectUncitedActions": true,
+  "notes": "Mirrors CODA2 src/intel/grounding.ts enforcement boundary — agents propose, deterministic code validates."
+}

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  executionStatusMessage,
   getExecuteBlockers,
   useExecuteCoaRevision,
   useExecutedSnapshot,
@@ -8,42 +7,46 @@ import {
   usePreparedExecution,
   useUpdateMatrixOverlay,
   useValidateOperatorCoa,
-  useDiscardOperatorCoa,
+  useRemoveCoa,
   useRebaseOperatorCoa,
   useMergeOperatorIntoParent,
-  useCreateImportedOperatorDraft,
   useCreateOperatorDraft,
   useForkOperatorModified,
+  useCoaStore,
 } from "@coa/store";
-import { useCoaStore } from "@coa/store";
+import { collectRevisionBlockers, needsMaterializedValidation } from "../../coa/materializeCoaRevision";
+import { getMatrixOverlay } from "../../coa/operatorCoa";
 import type { DecisionPoint } from "../../intel/types";
 import type { useDisplayedPlan } from "@coa/store";
 import type { ObservedFact } from "../../intel/types";
 import type { CoaCandidate } from "../../coa/types";
+import { factToLngLat } from "../../scene/theater";
 import {
   buildExecutionInteractionMap,
   mergeFeatureCollections,
+  resolveBarFallbackAnchor,
+  resolveBarInteractionCoords,
 } from "../../scene/executionInteractionMap";
+import { buildExecutionTrackPositions } from "../../scene/executionTrackMotion";
+import { orderSetTasksToSyncBars } from "../../scene/executionPlaybackScale";
+import { resolveMatrixSeekMapFactId } from "../../scene/resolveMatrixSeekMapFact";
 import type { MessageTrafficItem, OverviewTrack, ShowOrderItem } from "./types";
+import { mergeTimelineItems } from "./timelineItems";
 import { useExecutionPlayback } from "./useExecutionPlayback";
 import { ExecutionFeedbackBanner } from "./ExecutionFeedbackBanner";
 import { MapLogisticsStack } from "./MapLogisticsStack";
-import {
-  WorkflowStepper,
-  deriveWorkflowStepState,
-  type WorkflowStepId,
-} from "./WorkflowStepper";
 import { MatrixTaskPanel } from "./MatrixTaskPanel";
 import { InspectorPanel } from "./InspectorPanel";
+import type { MatrixInspectorContext } from "./MatrixInspectorDetail";
 import { RightSideDock, type RightSidePanel } from "./RightSideDock";
 import { ScenePickProvider, useScenePick } from "./ScenePickContext";
 import { TaskComposerProvider, useTaskComposer } from "./TaskComposerContext";
 import { TaskComposerLifecycle } from "./TaskComposerLifecycle";
 import { ResizableLayout } from "./ResizableLayout";
 import { buildLogisticsPlan } from "../../coa/logistics";
-import { collectRevisionBlockers } from "../../coa/materializeCoaRevision";
 import {
   applyManualEntryPatch,
+  createDraftManualEntryAtCell,
   validateManualEntry,
   type ManualSyncEntry,
   type ManualSyncTarget,
@@ -55,10 +58,10 @@ import {
   buildSyncMatrixModel,
   formatMatrixTick,
 } from "../../coa/syncMatrix";
-import { type SyncGridRowKey } from "../../coa/syncGridSchema";
-import type { BarPatch } from "@components/SyncMatrix";
+import { sectionIdForRowKey, type SyncGridRowKey } from "../../coa/syncGridSchema";
+import type { BarPatch, MatrixTimelineSeekTarget } from "@components/SyncMatrix";
 import { DecisionFlowPanel } from "./DecisionFlowPanel";
-import { EventTimeline, resolveTimelineFactId } from "./EventTimeline";
+import { resolveTimelineFactId } from "./EventTimeline";
 import { OperationalMapPanel } from "./OperationalMapPanel";
 import type { ActiveView } from "./activeView";
 import styles from "../../App.module.css";
@@ -92,7 +95,6 @@ type OpsWorkspaceProps = {
   selectedCoaId: string | undefined;
   onSelectCoa: (id: string) => void;
   onRunCoaEvaluation: () => void;
-  onCreateOperatorCoa?: () => void;
   coaRunning: boolean;
   commanderIntent?: string;
   validatedDecisionPoints: DecisionPoint[];
@@ -154,10 +156,9 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   const updateMatrixOverlay = useUpdateMatrixOverlay();
   const validateOperatorCoa = useValidateOperatorCoa();
   const executeCoaRevision = useExecuteCoaRevision();
-  const discardOperatorCoa = useDiscardOperatorCoa();
+  const removeCoa = useRemoveCoa();
   const rebaseOperatorCoa = useRebaseOperatorCoa();
   const mergeOperatorIntoParent = useMergeOperatorIntoParent();
-  const createImportedOperatorDraft = useCreateImportedOperatorDraft();
   const createOperatorDraft = useCreateOperatorDraft();
   const forkOperatorModified = useForkOperatorModified();
   const storeSelectedCoaId = useCoaStore((s) => s.selectedCoaId);
@@ -169,6 +170,7 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   const modifiedBarIds = matrixOverlay.modifiedBarIds;
   const [focusFactId, setFocusFactId] = useState<string | undefined>();
   const [focusNonce, setFocusNonce] = useState(0);
+  const lastPannedFactIdRef = useRef<string | undefined>();
   const [liveTrackCoord, setLiveTrackCoord] = useState<[number, number] | null>(null);
   const [composerDraft, setComposerDraft] = useState<MatrixComposerDraft | null>(null);
   const setManualEntries = (
@@ -193,6 +195,10 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   const [composerResetNonce, setComposerResetNonce] = useState(0);
   const [pendingComposerBar, setPendingComposerBar] = useState<SyncMatrixBar | null>(null);
   const [inspectedFactId, setInspectedFactId] = useState<string | undefined>();
+  const [inspectedEventId, setInspectedEventId] = useState<string | undefined>();
+  const [inspectorSource, setInspectorSource] = useState<"matrix" | "scene" | "event">("matrix");
+  const [matrixScrubTimeSec, setMatrixScrubTimeSec] = useState<number | undefined>();
+  const [focusedMatrixSectionId, setFocusedMatrixSectionId] = useState<string | undefined>();
   const [rightSidePanel, setRightSidePanel] = useState<RightSidePanel>("workflow");
   const feasibleCoas = props.candidates.filter((candidate) => candidate.status === "sat");
   const logisticsReady = props.displayedPlan.kind === "populated";
@@ -239,20 +245,18 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     kind: "success" | "error";
     messages: string[];
   } | null>(null);
-  const [operatorValidationFeedback, setOperatorValidationFeedback] = useState<{
-    kind: "success" | "error";
-    messages: string[];
-  } | null>(null);
+  const [validating, setValidating] = useState(false);
   const matrixExecuteBlocker = blockingExecute[0];
 
-  const handleMatrixValidate = useCallback(() => {
-    if (!selectedCoa) {
+  const handleValidate = useCallback(async () => {
+    if (!selectedCoa || !props.selectedCoaId) {
       setMatrixValidationFeedback({
         kind: "error",
-        messages: ["Select a COA in Step 03 before validating the matrix."],
+        messages: ["Select a COA in Step 03 before validating."],
       });
       return;
     }
+
     const taskBlockers = collectRevisionBlockers(
       selectedCoa,
       matrixOverlay,
@@ -265,63 +269,75 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       });
       return;
     }
-    if (matrixExecuteBlocker) {
+
+    const needsCoaValidation =
+      needsMaterializedValidation(selectedCoa) &&
+      (selectedCoa.validationStatus !== "validated" ||
+        selectedCoa.status === "draft" ||
+        selectedCoa.status === "incomplete");
+
+    if (needsCoaValidation) {
+      setValidating(true);
+      try {
+        const result = await validateOperatorCoa(props.selectedCoaId, materializeContext);
+        if (!result.ok) {
+          setMatrixValidationFeedback({
+            kind: "error",
+            messages: result.blockers,
+          });
+          return;
+        }
+      } finally {
+        setValidating(false);
+      }
+    }
+
+    const storeState = useCoaStore.getState();
+    const freshCoa = storeState.candidatesById[props.selectedCoaId];
+    const freshOverlay = getMatrixOverlay(storeState, props.selectedCoaId);
+    const execBlockers = getExecuteBlockers({
+      candidate: freshCoa,
+      overlay: freshOverlay,
+      preparedExecution: storeState.preparedExecution,
+      coaRunning: props.coaRunning,
+      logisticsReady: freshCoa?.logisticsPlan.kind === "populated",
+      materializeContext,
+    }).filter((reason) => !reason.includes("Prepare execution"));
+
+    if (execBlockers.length > 0) {
       setMatrixValidationFeedback({
         kind: "success",
         messages: [
-          "Matrix tasks look good.",
-          `Execute is still blocked: ${matrixExecuteBlocker}`,
+          needsCoaValidation
+            ? "COA validated — matrix tasks look good."
+            : "Matrix tasks look good.",
+          `Execute is still blocked: ${execBlockers[0]}`,
         ],
       });
       return;
     }
+
     setMatrixValidationFeedback({
       kind: "success",
       messages: [
-        preparedExecution
-          ? "Matrix is ready — use Execute (next to Validate) to commit."
-          : "Matrix is ready — use Execute (next to Validate) to prepare and commit.",
+        needsCoaValidation
+          ? "COA and matrix validated — use Execute to commit."
+          : "Matrix validated — use Execute to commit.",
       ],
     });
   }, [
     selectedCoa,
+    props.selectedCoaId,
+    props.coaRunning,
     matrixOverlay,
     materializeContext,
-    matrixExecuteBlocker,
-    preparedExecution,
+    validateOperatorCoa,
   ]);
 
-  const handleValidateOperator = useCallback(async () => {
-    if (!props.selectedCoaId) {
-      setOperatorValidationFeedback({
-        kind: "error",
-        messages: ["No COA selected. Choose an operator draft in Step 03."],
-      });
-      setRightSidePanel("workflow");
-      return;
-    }
-    setOperatorValidationFeedback(null);
-    setRightSidePanel("workflow");
-    const result = await validateOperatorCoa(props.selectedCoaId, materializeContext);
-    if (result.ok) {
-      setOperatorValidationFeedback({
-        kind: "success",
-        messages: ["Operator COA validated. Execute is available when the matrix has no blockers."],
-      });
-      return;
-    }
-    setOperatorValidationFeedback({
-      kind: "error",
-      messages: result.blockers,
-    });
-  }, [props.selectedCoaId, validateOperatorCoa, materializeContext]);
   useEffect(() => {
     setMatrixValidationFeedback(null);
-    setOperatorValidationFeedback(null);
   }, [props.selectedCoaId, matrixOverlay.revisionId]);
-  const executionMessage = executionStatusMessage(executedSnapshot, selectedCoa);
-  const recommendation =
-    "Generate COAs from the event, then select a feasible response to load its complete order set.";
+
   const generationProgress = props.coaRunning
     ? 62
     : props.coaPipelineStatus === "error"
@@ -465,49 +481,37 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   ]);
   const syncTickIntervalSec = syncMatrixModel?.tickIntervalSec ?? 900;
   const syncHorizonSec = syncMatrixModel?.horizonSec ?? 24 * 3600;
-  const { executionEvents, activeExecutionTaskIds, isPlaying, playbackStatus } =
-    useExecutionPlayback(executedSnapshot);
-  const workflowStepState = useMemo(
-    () =>
-      deriveWorkflowStepState({
-        hasEventContext:
-          Boolean(props.summaryText) &&
-          props.summaryText !== "Run pipeline to load scenario facts and recommendations.",
-        coaRunning: props.coaRunning,
-        candidateCount: props.candidates.length,
-        selectedCoaId: props.selectedCoaId,
-        logisticsReady,
-        canExecute: canClickExecute,
-        isExecuting: Boolean(executionMessage) || isPlaying,
-      }),
-    [
-      props.summaryText,
-      props.coaRunning,
-      props.candidates.length,
-      props.selectedCoaId,
-      logisticsReady,
-      canClickExecute,
-      executionMessage,
-      isPlaying,
-    ]
-  );
-  const matrixSectionRef = useRef<HTMLDivElement>(null);
-  const handleWorkflowStepSelect = useCallback((step: WorkflowStepId) => {
-    if (step === "matrix") {
-      matrixSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      return;
-    }
-    setRightSidePanel("workflow");
-    window.requestAnimationFrame(() => {
-      document
-        .querySelector(`[data-workflow-step="${step}"]`)
-        ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
-  }, []);
+  const {
+    executionEvents,
+    activeExecutionTaskIds,
+    completedExecutionTaskIds,
+    playbackTimeSec,
+    isPlaying,
+    isScrubbing,
+    playbackStatus,
+    seekPlaybackTime,
+    togglePlayback,
+  } = useExecutionPlayback(executedSnapshot);
+  const executionPlaybackLive =
+    Boolean(executedSnapshot) &&
+    (playbackStatus.phase === "playing" || playbackStatus.phase === "paused" || isScrubbing);
+  const matrixPlayheadSec = executedSnapshot ? playbackTimeSec : matrixScrubTimeSec;
   const executionCompletedBarIds = useMemo(() => {
-    if (!executedSnapshot || isPlaying) return undefined;
-    return new Set(executedSnapshot.orderSet.tasks.map((task) => task.id));
-  }, [executedSnapshot, isPlaying]);
+    if (!executedSnapshot) return undefined;
+    if (completedExecutionTaskIds.size === 0) return undefined;
+    return completedExecutionTaskIds;
+  }, [executedSnapshot, completedExecutionTaskIds]);
+  const executionActiveBarIds = useMemo(() => {
+    if (!executedSnapshot) return undefined;
+    if (
+      playbackStatus.phase !== "playing" &&
+      playbackStatus.phase !== "paused"
+    ) {
+      return undefined;
+    }
+    if (activeExecutionTaskIds.size === 0) return undefined;
+    return activeExecutionTaskIds;
+  }, [executedSnapshot, playbackStatus.phase, activeExecutionTaskIds]);
   const [executeError, setExecuteError] = useState<string | null>(null);
 
   const handleExecuteCoa = useCallback(() => {
@@ -521,53 +525,104 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       );
       return;
     }
+    setMatrixValidationFeedback(null);
+    setMatrixScrubTimeSec(undefined);
+    setFocusedMatrixSectionId(undefined);
     setRightSidePanel("workflow");
   }, [props.selectedCoaId, materializeContext, executeCoaRevision]);
   const timelineItems = useMemo(
-    () => [...executionEvents, ...props.reportWindowItems],
+    () => mergeTimelineItems(executionEvents, props.reportWindowItems),
     [executionEvents, props.reportWindowItems]
   );
-  const executionBars = useMemo(
-    () => syncMatrixModel?.rows.flatMap((row) => row.bars) ?? [],
-    [syncMatrixModel]
-  );
+  const executionBars = useMemo(() => {
+    if (executedSnapshot?.orderSet.tasks.length) {
+      return orderSetTasksToSyncBars(executedSnapshot.orderSet.tasks);
+    }
+    return syncMatrixModel?.rows.flatMap((row) => row.bars) ?? [];
+  }, [executedSnapshot, syncMatrixModel]);
   const shouldRenderTaskLinks = Boolean(
     executedSnapshot ||
       (selectedCoa?.validationStatus === "validated" &&
         selectedCoa.status === "sat" &&
         executionBars.length > 0)
   );
+  const executionTrackPositionOverrides = useMemo(() => {
+    if (!executedSnapshot) {
+      return new Map<string, { lng: number; lat: number }>();
+    }
+    return buildExecutionTrackPositions({
+      playbackTimeSec: matrixPlayheadSec ?? 0,
+      tasks: executedSnapshot.orderSet.tasks,
+      bars: executionBars,
+      facts: props.mapFacts,
+      tracks: props.overviewTracks,
+      manualEntries,
+    });
+  }, [
+    executedSnapshot,
+    matrixPlayheadSec,
+    executionBars,
+    props.mapFacts,
+    props.overviewTracks,
+    manualEntries,
+  ]);
+
+  const executionOverviewTracks = useMemo(() => {
+    if (executionTrackPositionOverrides.size === 0) return props.overviewTracks;
+    return props.overviewTracks.map((track) => {
+      const override = executionTrackPositionOverrides.get(track.id);
+      if (!override) return track;
+      return {
+        ...track,
+        coordinates: { lng: override.lng, lat: override.lat },
+      };
+    });
+  }, [props.overviewTracks, executionTrackPositionOverrides]);
+
+  const mapLinkTracks = executedSnapshot ? executionOverviewTracks : props.overviewTracks;
   const executionInteractionGeoJson = useMemo(() => {
     if (!shouldRenderTaskLinks || executionBars.length === 0) return null;
     return buildExecutionInteractionMap({
       bars: executionBars,
       facts: props.mapFacts,
-      tracks: props.overviewTracks,
+      tracks: mapLinkTracks,
       manualEntries,
-      activeBarIds:
-        executedSnapshot && isPlaying && activeExecutionTaskIds.size > 0
-          ? activeExecutionTaskIds
-          : undefined,
     });
   }, [
     shouldRenderTaskLinks,
-    executedSnapshot,
     executionBars,
     props.mapFacts,
-    props.overviewTracks,
+    mapLinkTracks,
     manualEntries,
-    isPlaying,
-    activeExecutionTaskIds,
   ]);
-  const mapActionPreview = useMemo(
-    () => mergeFeatureCollections(executionInteractionGeoJson, actionPreviewGeoJson),
-    [executionInteractionGeoJson, actionPreviewGeoJson]
-  );
+
+  const executionPlaybackActive = Boolean(executedSnapshot);
+
+  const selectedBarMapPreview = useMemo(() => {
+    if (!selectedSyncBar) return null;
+    return buildExecutionInteractionMap({
+      bars: [selectedSyncBar],
+      facts: props.mapFacts,
+      tracks: mapLinkTracks,
+      manualEntries,
+      useFallbackAnchors: true,
+    });
+  }, [selectedSyncBar, props.mapFacts, mapLinkTracks, manualEntries]);
+
+  const mapActionPreview = useMemo(() => {
+    if (actionPreviewGeoJson?.features.length) {
+      return mergeFeatureCollections(selectedBarMapPreview, actionPreviewGeoJson);
+    }
+    if (selectedBarMapPreview) return selectedBarMapPreview;
+    return executionInteractionGeoJson;
+  }, [executionInteractionGeoJson, actionPreviewGeoJson, selectedBarMapPreview]);
 
   useEffect(() => {
     setSelectedSyncBar(null);
     setComposerDraft(null);
     setInspectedFactId(undefined);
+    setInspectedEventId(undefined);
+    setFocusedMatrixSectionId(undefined);
   }, [props.selectedCoaId]);
 
   useEffect(() => {
@@ -575,13 +630,17 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   }, [props.selectedOverviewTrack?.id]);
 
   const displayedSelectedTrack = useMemo(() => {
-    if (!props.selectedOverviewTrack) return undefined;
-    if (!liveTrackCoord) return props.selectedOverviewTrack;
+    const baseTrack = props.selectedOverviewTrack
+      ? executionOverviewTracks.find((track) => track.id === props.selectedOverviewTrack?.id) ??
+        props.selectedOverviewTrack
+      : undefined;
+    if (!baseTrack) return undefined;
+    if (!liveTrackCoord) return baseTrack;
     return {
-      ...props.selectedOverviewTrack,
+      ...baseTrack,
       coordinates: { lat: liveTrackCoord[1], lng: liveTrackCoord[0] },
     };
-  }, [props.selectedOverviewTrack, liveTrackCoord]);
+  }, [props.selectedOverviewTrack, executionOverviewTracks, liveTrackCoord]);
   const highlightedFactIds = useMemo(() => {
     const ids = new Set<string>();
     if (focusFactId) ids.add(focusFactId);
@@ -592,11 +651,7 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       .filter((entry) => entry.targetFactId && focusFactId === entry.targetFactId)
       .forEach((entry) => entry.targetFactId && ids.add(entry.targetFactId));
     if (shouldRenderTaskLinks && executionBars.length > 0) {
-      const activeBars =
-        activeExecutionTaskIds.size > 0
-          ? executionBars.filter((bar) => activeExecutionTaskIds.has(bar.id))
-          : executionBars;
-      for (const bar of activeBars) {
+      for (const bar of executionBars) {
         bar.targetFactIds?.forEach((id) => ids.add(id));
         const entry = manualEntries.find((item) => item.id === bar.id);
         if (entry?.targetFactId) ids.add(entry.targetFactId);
@@ -615,21 +670,72 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     props.selectedOverviewTrack?.id,
     shouldRenderTaskLinks,
     executionBars,
-    activeExecutionTaskIds,
   ]);
 
   const highlightTrackOnMap = useCallback(
-    (factId: string) => {
+    (factId: string, options?: { pan?: boolean }) => {
+      const shouldPan = options?.pan ?? true;
       props.setSelectedOverviewTrackId(factId);
       setFocusFactId(factId);
-      setFocusNonce((nonce) => nonce + 1);
+      if (shouldPan && lastPannedFactIdRef.current !== factId) {
+        lastPannedFactIdRef.current = factId;
+        setFocusNonce((nonce) => nonce + 1);
+      }
     },
     [props.setSelectedOverviewTrackId]
   );
 
+  const activeExecutionTaskKey = useMemo(() => {
+    if (!executedSnapshot || activeExecutionTaskIds.size === 0) return "";
+    return [...activeExecutionTaskIds].sort().join("|");
+  }, [executedSnapshot, activeExecutionTaskIds]);
+
+  useEffect(() => {
+    if (!executedSnapshot || playbackStatus.phase === "committed") return;
+    if (!activeExecutionTaskKey) return;
+    const activeTask = executedSnapshot.orderSet.tasks.find((task) =>
+      activeExecutionTaskIds.has(task.id)
+    );
+    const factId = activeTask?.targetFactIds?.[0];
+    if (factId) highlightTrackOnMap(factId, { pan: false });
+  }, [
+    executedSnapshot,
+    playbackStatus.phase,
+    activeExecutionTaskKey,
+    activeExecutionTaskIds,
+    highlightTrackOnMap,
+  ]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "Space" && event.key !== " ") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest("input, textarea, select, [contenteditable='true']")
+      ) {
+        return;
+      }
+      if (!executedSnapshot) return;
+      event.preventDefault();
+      togglePlayback();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [executedSnapshot, togglePlayback]);
+
+  const focusMatrixInspector = useCallback(() => {
+    setInspectorSource("matrix");
+    setInspectedFactId(undefined);
+    setInspectedEventId(undefined);
+    setRightSidePanel("inspector");
+  }, []);
+
   const inspectSceneObject = (factId: string) => {
+    setInspectorSource("scene");
     highlightTrackOnMap(factId);
     setInspectedFactId(factId);
+    setInspectedEventId(undefined);
     setRightSidePanel("inspector");
   };
 
@@ -660,6 +766,58 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     );
   }, [inspectedFactId, props.overviewTracks, props.selectedOverviewTrack]);
 
+  const matrixInspectorSubtitle = isProvisionalMatrix
+    ? "Provisional matrix — parallel tasks by operational element."
+    : selectedCoa
+      ? `${selectedCoa.label} — parallel actions on the mission timeline.`
+      : "Generate courses of action to populate the synchronization matrix.";
+
+  const matrixInspectorContext = useMemo(
+    (): MatrixInspectorContext => ({
+      coaLabel: selectedCoa?.label,
+      commanderIntent: props.commanderIntent,
+      matrixSubtitle: matrixInspectorSubtitle,
+      taskCount: executionBars.length,
+      selectedBar: selectedSyncBar ?? undefined,
+      bars: executionBars,
+      knownAssets: props.knownAssets,
+      executionActiveBarIds,
+      executionCompletedBarIds,
+      executionPlaybackPhase:
+        playbackStatus.phase === "playing" ||
+        playbackStatus.phase === "paused" ||
+        playbackStatus.phase === "committed"
+          ? playbackStatus.phase
+          : undefined,
+      executionPlayheadSec: matrixPlayheadSec,
+      horizonSec: syncHorizonSec,
+    }),
+    [
+      selectedCoa?.label,
+      props.commanderIntent,
+      matrixInspectorSubtitle,
+      executionBars,
+      selectedSyncBar,
+      props.knownAssets,
+      executionActiveBarIds,
+      executionCompletedBarIds,
+      playbackStatus.phase,
+      matrixPlayheadSec,
+      syncHorizonSec,
+    ]
+  );
+
+  const handleSelectMatrixTaskFromInspector = useCallback(
+    (barId: string) => {
+      const bar = executionBars.find((item) => item.id === barId);
+      if (!bar) return;
+      setSelectedSyncBar(bar);
+      setPendingComposerBar(bar);
+      focusMatrixInspector();
+    },
+    [executionBars, focusMatrixInspector]
+  );
+
   const sceneSelectionFactId =
     focusFactId ?? props.selectedOverviewTrack?.id ?? inspectedFactId;
 
@@ -676,7 +834,18 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   };
 
   const handleCreateManualAtCell = (rowKey: SyncGridRowKey, startSec: number) => {
-    setComposerDraft({ rowKey, startSec });
+    const entry = createDraftManualEntryAtCell({
+      rowKey,
+      startSec,
+      durationSec: syncTickIntervalSec,
+    });
+    setManualEntries((prev) => [...prev, entry]);
+    setComposerDraft({
+      rowKey,
+      startSec,
+      entryId: entry.id,
+      actionVerb: entry.actionVerb,
+    });
     setSelectedSyncBar(null);
     setPendingComposerBar(null);
   };
@@ -709,6 +878,16 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
   };
 
   const handleCancelComposer = () => {
+    const draftEntryId = composerDraft?.entryId;
+    if (draftEntryId) {
+      setManualEntries((prev) => {
+        const draft = prev.find((item) => item.id === draftEntryId);
+        if (draft && !draft.confirmed) {
+          return prev.filter((item) => item.id !== draftEntryId);
+        }
+        return prev;
+      });
+    }
     setComposerDraft(null);
     setAuthorTarget(null);
     setSelectedSyncBar(null);
@@ -874,29 +1053,82 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     [props.overviewTracks, props.mapFacts, props.topActions]
   );
 
+  const inspectedEvent = useMemo(
+    () =>
+      inspectedEventId
+        ? timelineItems.find((item) => item.id === inspectedEventId)
+        : undefined,
+    [inspectedEventId, timelineItems]
+  );
+
+  const inspectedEventFactId = useMemo(
+    () =>
+      inspectedEvent ? resolveEventTargetFactId(inspectedEvent) : undefined,
+    [inspectedEvent, resolveEventTargetFactId]
+  );
+
+  const handleMatrixTimelineSeek = useCallback(
+    (timeSec: number, target: MatrixTimelineSeekTarget) => {
+      focusMatrixInspector();
+      if (executedSnapshot) {
+        seekPlaybackTime(timeSec);
+      }
+      setMatrixScrubTimeSec(timeSec);
+      const sectionId =
+        target.sectionId ??
+        (target.rowKey ? sectionIdForRowKey(target.rowKey) : undefined);
+      if (sectionId) {
+        setFocusedMatrixSectionId(sectionId);
+      }
+      const mapFactId = resolveMatrixSeekMapFactId({
+        timeSec,
+        target,
+        bars: executionBars,
+        facts: props.mapFacts,
+        tracks: props.overviewTracks,
+      });
+      if (mapFactId) {
+        highlightTrackOnMap(mapFactId);
+      }
+    },
+    [
+      focusMatrixInspector,
+      executedSnapshot,
+      seekPlaybackTime,
+      executionBars,
+      props.mapFacts,
+      props.overviewTracks,
+      highlightTrackOnMap,
+    ]
+  );
+
+  const selectTimelineEvent = useCallback(
+    (event: MessageTrafficItem) => {
+      setInspectorSource("event");
+      setInspectedEventId(event.id);
+      setInspectedFactId(undefined);
+      setRightSidePanel("inspector");
+    },
+    []
+  );
+
   const handleTimelineEvent = useCallback(
     (event: MessageTrafficItem, factId?: string) => {
+      selectTimelineEvent(event);
       const resolved = factId ?? resolveEventTargetFactId(event);
 
       if (event.kind === "validation") {
-        setRightSidePanel("workflow");
-        props.setActiveView("trace");
         return;
       }
 
       if (resolved) {
         setTimelineInstructionSeed(undefined);
         highlightTrackOnMap(resolved);
-        openMatrixComposer();
-        return;
-      }
-
-      if (event.kind === "ops") {
+      } else if (event.kind === "ops") {
         setTimelineInstructionSeed(event.text);
-        openMatrixComposer();
       }
     },
-    [resolveEventTargetFactId, openMatrixComposer, props.setActiveView, highlightTrackOnMap]
+    [selectTimelineEvent, resolveEventTargetFactId, highlightTrackOnMap]
   );
 
   return (
@@ -918,11 +1150,6 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       <MapClickBridge onInspectFact={inspectSceneObject}>
         {(onMapFactClick) => (
     <div className={styles.decisionFlowPage}>
-      <WorkflowStepper
-        currentStep={workflowStepState.current}
-        completedSteps={workflowStepState.completed}
-        onStepSelect={handleWorkflowStepSelect}
-      />
       <ResizableLayout
         fillParent
         className={styles.harpoonResizableLayout}
@@ -955,7 +1182,7 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
         }
         center={
           <aside className={styles.harpoonMapDock}>
-            <div className={styles.harpoonMapStackHost} ref={matrixSectionRef}>
+            <div className={styles.harpoonMapStackHost}>
               <MapLogisticsStack
               variant="harpoon"
               logisticsStepNumber="04"
@@ -971,12 +1198,13 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
                 <OperationalMapPanel
                   embeddedInStack
                   mapFacts={props.mapFacts}
-                  tracks={props.overviewTracks}
+                  tracks={executionOverviewTracks}
                   selectedTrack={displayedSelectedTrack}
                   focusFactId={focusFactId}
                   focusNonce={focusNonce}
                   highlightedFactIds={highlightedFactIds}
                   actionPreview={mapActionPreview}
+                  executionPlaybackActive={executionPlaybackActive}
                   onFactIconClick={onMapFactClick}
                   onPinnedCoordUpdate={(factId, coord) => {
                     if (factId === props.selectedOverviewTrack?.id) setLiveTrackCoord(coord);
@@ -994,11 +1222,43 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
               modifiedBarIds={modifiedBarIds}
               selectedSyncBarId={selectedSyncBar?.id}
               onSyncBarSelect={(bar) => {
+                focusMatrixInspector();
                 setSelectedSyncBar(bar);
                 setPendingComposerBar(bar);
                 setComposerDraft(null);
                 setAuthorTarget(null);
-                if (bar.targetFactIds?.[0]) highlightTrackOnMap(bar.targetFactIds[0]);
+                const entry = manualEntries.find((item) => item.id === bar.id);
+                const factId = bar.targetFactIds?.[0] ?? entry?.targetFactId;
+                if (factId) {
+                  highlightTrackOnMap(factId);
+                  return;
+                }
+                const coords = resolveBarInteractionCoords(
+                  bar,
+                  props.mapFacts,
+                  props.overviewTracks,
+                  manualEntries
+                );
+                const anchor =
+                  coords.targetCoord ??
+                  coords.actorCoord ??
+                  resolveBarFallbackAnchor(bar, props.mapFacts, props.overviewTracks);
+                if (!anchor) return;
+                let nearestFactId: string | undefined;
+                let nearestDistance = Number.POSITIVE_INFINITY;
+                props.mapFacts.forEach((fact, index) => {
+                  const factCoord = factToLngLat(fact, index);
+                  const dx = factCoord[0] - anchor[0];
+                  const dy = factCoord[1] - anchor[1];
+                  const distance = Math.hypot(dx, dy);
+                  if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestFactId = fact.id;
+                  }
+                });
+                if (nearestFactId && nearestDistance < 0.25) {
+                  highlightTrackOnMap(nearestFactId);
+                }
               }}
               onBarPatch={handleBarPatch}
               onManualEntryUpdate={handleManualEntryUpdate}
@@ -1025,16 +1285,27 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
               onCreateManualAtCell={handleCreateManualAtCell}
               externalEditor
               autoExpandRowKey={composerDraft?.rowKey}
-              executing={Boolean(executionMessage) || isPlaying}
-              executionPlaybackPhase={playbackStatus.phase === "idle" ? undefined : playbackStatus.phase}
-              executionActiveBarIds={
-                isPlaying ? activeExecutionTaskIds : undefined
+              executing={executionPlaybackLive}
+              executionCommitted={Boolean(executedSnapshot) && playbackStatus.phase === "committed"}
+              onTogglePlayback={executedSnapshot ? togglePlayback : undefined}
+              executionPlaybackPhase={
+                playbackStatus.phase === "idle" ? undefined : playbackStatus.phase
               }
+              executionActiveBarIds={executionActiveBarIds}
               executionCompletedBarIds={executionCompletedBarIds}
+              executionPlayheadSec={matrixPlayheadSec}
+              onTimelineSeek={handleMatrixTimelineSeek}
+              onMatrixFocus={focusMatrixInspector}
+              focusedSectionId={focusedMatrixSectionId}
               executionBanner={
-                <ExecutionFeedbackBanner status={playbackStatus} error={executeError} />
+                <ExecutionFeedbackBanner
+                  status={playbackStatus}
+                  error={executeError}
+                  compact
+                />
               }
-              onValidate={handleMatrixValidate}
+              onValidate={() => void handleValidate()}
+              validating={validating}
               validationFeedback={matrixValidationFeedback ?? undefined}
               onExecute={handleExecuteCoa}
               canExecute={canClickExecute}
@@ -1046,20 +1317,11 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
                   : matrixExecuteBlocker
               }
               executeBlocker={matrixExecuteBlocker}
-              timeline={
-                <EventTimeline
-                  embedded
-                  items={timelineItems}
-                  tracks={props.overviewTracks}
-                  facts={props.mapFacts}
-                  highlightFactId={focusFactId}
-                  onFocusFact={highlightTrackOnMap}
-                  onEventNavigate={handleTimelineEvent}
-                />
-              }
-              timelineExpanded={Boolean(executedSnapshot) || executionEvents.length > 0}
-              defaultLowerRatio={0.34}
-              minLogisticsHeight={200}
+              timelineEvents={timelineItems}
+              selectedTimelineEventId={inspectedEventId}
+              onTimelineEventSelect={selectTimelineEvent}
+              defaultLowerRatio={0.26}
+              minLogisticsHeight={160}
               minMapHeight={220}
             />
             </div>
@@ -1071,10 +1333,23 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
             onPanelChange={setRightSidePanel}
             inspector={
               <InspectorPanel
+                inspectorSource={inspectorSource}
+                matrixContext={matrixInspectorContext}
+                onSelectMatrixTask={handleSelectMatrixTaskFromInspector}
                 inspectedFactId={inspectedFactId}
                 fact={inspectedFact}
                 track={inspectedTrack}
+                inspectedEvent={inspectedEvent}
+                inspectedEventFactId={inspectedEventFactId}
                 onLocateFact={highlightTrackOnMap}
+                onInspectEventWorkflow={() => {
+                  setRightSidePanel("workflow");
+                  props.setActiveView("trace");
+                }}
+                onInspectEventAuthorTask={(event) => {
+                  handleTimelineEvent(event, inspectedEventFactId);
+                  openMatrixComposer();
+                }}
               />
             }
             workflow={
@@ -1082,7 +1357,7 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
                 summaryText={props.summaryText}
                 summaryTime={props.summaryTime}
                 phase={props.phase}
-                reportWindowItems={props.reportWindowItems}
+                timelineItems={timelineItems}
                 focusFactId={focusFactId}
                 resolveEventTargetFactId={resolveEventTargetFactId}
                 onTimelineEvent={handleTimelineEvent}
@@ -1090,26 +1365,20 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
                 selectedCoaId={props.selectedCoaId}
                 onSelectCoa={props.onSelectCoa}
                 onRunCoaEvaluation={props.onRunCoaEvaluation}
-                onCreateOperatorCoa={props.onCreateOperatorCoa}
                 coaRunning={props.coaRunning}
                 coaPipelineStatus={props.coaPipelineStatus}
                 generationBlockerDetail={props.generationBlockerDetail}
                 generationError={props.generationError}
-                recommendation={recommendation}
                 matrixOverlay={matrixOverlay}
                 onForkOperatorModified={forkOperatorModified}
-                onValidateOperator={handleValidateOperator}
-                operatorValidationFeedback={operatorValidationFeedback ?? undefined}
                 onMergeOperatorIntoParent={mergeOperatorIntoParent}
                 onRebaseOperatorCoa={rebaseOperatorCoa}
-                onDiscardOperatorCoa={discardOperatorCoa}
-                onCreateImportedOperatorDraft={createImportedOperatorDraft}
+                onRemoveCoa={removeCoa}
                 canClickExecute={canClickExecute}
                 blockingExecute={blockingExecute}
-                executionMessage={executionMessage}
-                isPlaying={isPlaying}
                 playbackStatus={playbackStatus}
                 onExecuteCoa={handleExecuteCoa}
+                onTogglePlayback={togglePlayback}
                 preparedExecution={preparedExecution}
               />
             }

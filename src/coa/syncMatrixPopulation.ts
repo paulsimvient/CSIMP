@@ -9,7 +9,7 @@ import { qualityToSyncStatus, type SyncBarStatus, type SyncMatrixBar } from "./s
 import type { LogisticsChip, LogisticsPlan } from "./types";
 
 const ACTION_VERB_PATTERN =
-  /\b(secure|maintain|disrupt|establish|reinforce|screen|suppress|observe|monitor|coordinate|resupply|deploy|advance|block|protect|investigate|inform|harden|strike)\b/i;
+  /\b(secure|maintain|disrupt|jam|establish|reinforce|screen|suppress|observe|monitor|coordinate|resupply|deploy|advance|block|protect|investigate|inform|harden|strike)\b/i;
 
 export function aggregateChipsByAction(
   chips: LogisticsChip[]
@@ -209,13 +209,15 @@ export function extractActionVerb(chip: LogisticsChip): string | undefined {
     monitor: "Monitor",
     coordinate: "Coordinate",
     preserve: "Screen",
-    inform: "Report",
+    inform: "Inform",
     harden: "Harden",
     movement: "Advance",
     maneuver: "Maneuver",
     strike: "Strike",
     fires: "Suppress",
     investigate: "Investigate",
+    cyber: "Disrupt",
+    information: "Inform",
   };
   if (type && typeMap[type]) return typeMap[type];
   return undefined;
@@ -243,16 +245,26 @@ function resolveCategoryFromChip(chip: LogisticsChip): import("./syncGridSchema"
   const label = chip.label.toLowerCase();
 
   if (/monitor|observe|surveillance|isr|orbit|collection/.test(label)) return "isr";
-  if (/wait for|further information|report|inform/.test(label)) return "supporting-effort";
+  if (/info ops|information ops|influence|counter rumor|public message/.test(label)) {
+    return "information";
+  }
+  if (/wait for|further information|report/.test(label) && actionType !== "inform") {
+    return "supporting-effort";
+  }
 
   switch (actionType) {
     case "observe":
     case "monitor":
+      return "isr";
     case "investigate":
+      if (domains.some((d) => d.includes("cyber")) || /cyber|authentication|forensic|siem/.test(label)) {
+        return "cyber";
+      }
       return "isr";
     case "preserve":
-    case "inform":
       return "security";
+    case "inform":
+      return "information";
     case "harden":
       return "cyber";
     case "coordinate":
@@ -266,6 +278,7 @@ function resolveCategoryFromChip(chip: LogisticsChip): import("./syncGridSchema"
   }
 
   if (domains.some((d) => d.includes("cyber"))) return "cyber";
+  if (/inform|influence|message|rumor/.test(label)) return "information";
   if (/fires|strike|suppress/.test(label)) return "fires";
   if (/logistics|fuel|resupply|casevac/.test(label)) return "logistics";
   if (/screen|secure|preserve/.test(label)) return "security";

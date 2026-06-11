@@ -193,8 +193,19 @@ EOF
 fi
 
 set -a
-# shellcheck disable=SC1091
-source <(grep -E '^VITE_' .env | sed 's/\r$//')
+load_vite_env() {
+  if [[ ! -f .env ]]; then
+    return
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^VITE_[A-Za-z0-9_]+= ]]; then
+      export "$line"
+    fi
+  done < .env
+}
+load_vite_env
 set +a
 
 MODEL="$(read_env_model)"
@@ -207,7 +218,11 @@ ok "App origin(s): ${APP_ORIGIN_PRIMARY}, ${APP_ORIGIN_SECONDARY}"
 
 if [[ ! -d node_modules ]]; then
   info "Installing npm dependencies…"
-  npm install
+  if [[ -f package-lock.json ]]; then
+    npm ci
+  else
+    npm install
+  fi
 else
   ok "node_modules present"
 fi
@@ -249,18 +264,4 @@ fi
 info "Starting dev server at http://localhost:${PORT}"
 info "Press Ctrl+C to stop"
 
-HOST_ERR_LOG="$(mktemp)"
-if npm run dev -- --port "$PORT" --host 2>"$HOST_ERR_LOG"; then
-  rm -f "$HOST_ERR_LOG"
-  exit 0
-fi
-
-cat "$HOST_ERR_LOG" >&2
-if grep -q "uv_interface_addresses returned Unknown system error 1" "$HOST_ERR_LOG"; then
-  warn "Dev server hit network interface error with '--host'; retrying without it."
-  rm -f "$HOST_ERR_LOG"
-  npm run dev -- --port "$PORT"
-else
-  rm -f "$HOST_ERR_LOG"
-  die "Dev server failed with '--host' for an unexpected reason."
-fi
+npm run dev -- --port "$PORT" --host 127.0.0.1

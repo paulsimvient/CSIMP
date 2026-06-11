@@ -19,7 +19,7 @@ import {
   prepareExecution,
   setMatrixOverlay,
   validateOperatorCoa,
-  discardOperatorCoa,
+  removeCoaCandidate,
   mergeOperatorRevisionIntoParent,
   rebaseOperatorCoa,
 } from "./operatorCoaActions";
@@ -63,6 +63,7 @@ type CoaStore = CoaState & {
     ctx?: import("./materializeCoaRevision").MaterializeRevisionContext
   ) => void;
   discardOperatorCoa: (coaId: CoaId) => void;
+  removeCoa: (coaId: CoaId) => void;
   rebaseOperatorCoa: (operatorCoaId: CoaId, newParentId: CoaId) => void;
   mergeOperatorIntoParent: (operatorCoaId: CoaId) => void;
   executePreparedCoaRevision: () => boolean;
@@ -83,7 +84,6 @@ const INITIAL_STATE: CoaState = {
 };
 
 const COA_SQL_KEY = "coa_state";
-const AUTO_HYDRATE_FROM_SQL = false;
 
 export { EMPTY_DISPLAYED_PLAN, EMPTY_LOGISTICS_NOT_BUILT } from "./logisticsConstants";
 
@@ -126,6 +126,8 @@ export const useCoaStore = create<CoaStore>()((set, get) => ({
       console.warn(`[COA store] selectCoa: unknown coaId "${coaId}"`);
       return;
     }
+
+    if (state.selectedCoaId === coaId) return;
 
     commitState({ ...state, selectedCoaId: coaId, preparedExecution: undefined });
   },
@@ -232,7 +234,11 @@ export const useCoaStore = create<CoaStore>()((set, get) => ({
   },
 
   discardOperatorCoa: (coaId) => {
-    commitState(discardOperatorCoa(normalizeCoaState(get()), coaId));
+    commitState(removeCoaCandidate(normalizeCoaState(get()), coaId));
+  },
+
+  removeCoa: (coaId) => {
+    commitState(removeCoaCandidate(normalizeCoaState(get()), coaId));
   },
 
   rebaseOperatorCoa: (operatorCoaId, newParentId) => {
@@ -349,7 +355,11 @@ export function useValidateOperatorCoa() {
 }
 
 export function useDiscardOperatorCoa() {
-  return useCoaStore((s) => s.discardOperatorCoa);
+  return useCoaStore((s) => s.removeCoa);
+}
+
+export function useRemoveCoa() {
+  return useCoaStore((s) => s.removeCoa);
 }
 
 export function useRebaseOperatorCoa() {
@@ -403,14 +413,11 @@ async function persistCoaState(state: CoaState): Promise<void> {
   await saveSqlSnapshot(COA_SQL_KEY, state);
 }
 
-async function hydrateCoaState(): Promise<void> {
+export async function hydrateCoaState(): Promise<boolean> {
   const snapshot = await loadSqlSnapshot<CoaState>(COA_SQL_KEY);
-  if (!snapshot) return;
+  if (!snapshot) return false;
   useCoaStore.setState(sanitizeHydratedCoaState(snapshot));
-}
-
-if (AUTO_HYDRATE_FROM_SQL) {
-  void hydrateCoaState();
+  return true;
 }
 
 export { emptyMatrixOverlay, EMPTY_MATRIX_OVERLAY, getExecuteBlockers, getMatrixOverlay } from "./operatorCoa";

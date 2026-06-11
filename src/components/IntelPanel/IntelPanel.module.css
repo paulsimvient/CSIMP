@@ -4,6 +4,14 @@
   gap: 0;
 }
 
+.agentRuntime {
+  font-size: 11px;
+  color: #7dd3fc;
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: ui-monospace, monospace;
+}
+
 /* ── Section ── */
 .section {
   border-bottom: 1px solid var(--border);

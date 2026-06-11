@@ -71,7 +71,9 @@ function CoaCard({
   return (
     <button
       className={`${styles.card} ${isSelected ? styles.selected : ""} ${status !== "sat" ? styles.unsat : ""}`}
-      onClick={() => onSelect(candidate.id)}
+      onClick={() => {
+        if (!isSelected) onSelect(candidate.id);
+      }}
     >
       <div className={styles.cardHeader}>
         <span className={styles.rank}>#{rank}</span>

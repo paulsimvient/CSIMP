@@ -137,9 +137,27 @@ export function buildActionPreview(input: ActionPreviewInput): ActionPreviewResu
       features.push(polygonFeature([circleRing(targetCoord, 2.5)], { previewKind: "suppress-area", dashed: 0 }));
     }
     statusLabel = "✓ Suppression area shown on target";
-  } else if (action.includes("disrupt")) {
+  } else if (action.includes("disrupt") || action.includes("jam")) {
+    if (hasLink) {
+      features.push(lineFeature([actorCoord!, targetCoord!], { previewKind: "disrupt-line", dashed: 1 }));
+    }
     features.push(polygonFeature([circleRing(anchor, 3)], { previewKind: "disrupt-area", dashed: 1 }));
-    statusLabel = "✓ Disruption radius shown on map";
+    statusLabel = action.includes("jam")
+      ? "✓ Jam / EW link and radius shown on map"
+      : "✓ Disruption link and radius shown on map";
+  } else if (action.includes("harden")) {
+    if (hasLink) {
+      features.push(lineFeature([actorCoord!, targetCoord!], { previewKind: "coord-line", dashed: 1 }));
+    }
+    if (targetCoord) {
+      features.push(polygonFeature([circleRing(targetCoord, 1.8)], { previewKind: "secure-area", dashed: 0 }));
+    }
+    statusLabel = "✓ Harden / contain area shown on map";
+  } else if (action.includes("inform")) {
+    if (hasLink) {
+      features.push(lineFeature([actorCoord!, targetCoord!], { previewKind: "coord-line", dashed: 1 }));
+    }
+    statusLabel = "✓ Information ops link shown on map";
   } else if (action.includes("resupply") || action.includes("casevac")) {
     if (hasLink) {
       features.push(lineFeature([actorCoord!, targetCoord!], { previewKind: "logistics-line", dashed: 1 }));

@@ -17,6 +17,13 @@ type IntelPanelProps = {
   packet?: ScenarioPacket;
   interpretation?: LLMInterpretation;
   groundingResult?: GroundingValidationResult;
+  agentRuntime?: {
+    agentId: string;
+    agentVersion: string;
+    releaseId?: string;
+    inputHash: string;
+    outputHash: string;
+  };
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -26,6 +33,7 @@ export function IntelPanel({
   packet,
   interpretation,
   groundingResult,
+  agentRuntime,
 }: IntelPanelProps) {
   const [selectedTitle, setSelectedTitle] = useState<string>("Runtime summary");
   const [selectedPayload, setSelectedPayload] = useState<unknown>(null);
@@ -54,6 +62,13 @@ export function IntelPanel({
 
   return (
     <div className={styles.panel}>
+      {agentRuntime ? (
+        <div className={styles.agentRuntime}>
+          Agent {agentRuntime.agentId} v{agentRuntime.agentVersion}
+          {agentRuntime.releaseId ? ` · ${agentRuntime.releaseId}` : ""}
+          {" · "}in {agentRuntime.inputHash.slice(0, 8)} out {agentRuntime.outputHash.slice(0, 8)}
+        </div>
+      ) : null}
       <Section title="Technical Inspector">
         <div className={styles.inspectorPanel}>
           <div className={styles.inspectorHeader}>{selectedTitle}</div>

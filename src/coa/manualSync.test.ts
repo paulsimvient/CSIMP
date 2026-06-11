@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   applyManualEntryPatch,
+  createDraftManualEntryAtCell,
   createImportedManualEntriesFromText,
   createManualEntryFromInstruction,
+  manualEntryToBarLabel,
   parseManualInstruction,
   parseMissionOffsetSec,
   validateManualEntry,
@@ -105,6 +107,35 @@ describe("applyManualEntryPatch", () => {
   });
 });
 
+describe("createDraftManualEntryAtCell", () => {
+  it("creates a visible matrix placeholder with timing but missing task fields", () => {
+    const entry = createDraftManualEntryAtCell({
+      rowKey: "cyber::disruption",
+      startSec: 900,
+      durationSec: 3600,
+    });
+    expect(entry.rowKey).toBe("cyber::disruption");
+    expect(entry.actionVerb).toBe("Disrupt");
+    expect(entry.startSec).toBe(900);
+    expect(entry.durationSec).toBe(3600);
+    expect(entry.missingFields).toEqual(["actor", "target"]);
+    expect(entry.confirmed).toBe(false);
+    expect(manualEntryToBarLabel(entry)).toBe("Disrupt");
+  });
+
+  it("defaults jam, harden, and inform verbs from row keys", () => {
+    expect(createDraftManualEntryAtCell({ rowKey: "cyber::jam", startSec: 0 }).actionVerb).toBe(
+      "Jam"
+    );
+    expect(createDraftManualEntryAtCell({ rowKey: "cyber::harden", startSec: 0 }).actionVerb).toBe(
+      "Harden"
+    );
+    expect(
+      createDraftManualEntryAtCell({ rowKey: "information::ops", startSec: 0 }).actionVerb
+    ).toBe("Inform");
+  });
+});
+
 describe("createManualEntryFromInstruction", () => {
   it("creates a provisional user-added entry", () => {
     const entry = createManualEntryFromInstruction(
@@ -114,6 +145,19 @@ describe("createManualEntryFromInstruction", () => {
     expect(entry.origin).toBe("user-added");
     expect(entry.category).toBe("cyber");
     expect(entry.targetFactId).toBe("fact-radar");
+  });
+
+  it("routes jam, harden, and info ops instructions to the new rows", () => {
+    expect(
+      createManualEntryFromInstruction("Jam coastal radar emissions from H+1 to H+2").rowKey
+    ).toBe("cyber::jam");
+    expect(
+      createManualEntryFromInstruction("Harden port authentication logging from H+0 to H+1").rowKey
+    ).toBe("cyber::harden");
+    expect(
+      createManualEntryFromInstruction("Info ops counter the port closure rumor from H+1 to H+2")
+        .rowKey
+    ).toBe("information::ops");
   });
 });
 

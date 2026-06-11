@@ -69,4 +69,44 @@ describe("buildSyncMatrixModel", () => {
     expect(model.rows.some((row) => row.id === "commanders-intent")).toBe(true);
     expect(formatMissionTick(15 * 60)).toBe("H+15");
   });
+
+  it("does not duplicate manual overlay entries already materialized as system bars", () => {
+    const plan = buildLogisticsPlan({
+      coaId: "coa_dup",
+      source: "validated-intel",
+      actions: [
+        {
+          id: "investigate",
+          name: "GROU investigate air defense",
+          type: "observe",
+          startTime: 0,
+          duration: 600,
+          resources: ["grou-northwest-coastal"],
+        },
+      ],
+    });
+    if (plan.kind !== "populated") throw new Error("expected populated plan");
+    const manualEntry = {
+      id: "manual-1",
+      origin: "user-added" as const,
+      category: "supporting-effort" as const,
+      rowKey: "maneuver::supporting-effort" as const,
+      subLabel: "Supporting Effort",
+      actor: "GROU - Northwest coastal",
+      actionVerb: "Investigate",
+      target: "AIR - Western air defense",
+      startSec: 0,
+      durationSec: 600,
+      status: "planned" as const,
+      source: "matrix" as const,
+      missingFields: [],
+      confirmed: true,
+    };
+    const model = buildSyncMatrixModel({
+      plan,
+      manualEntries: [manualEntry],
+    });
+    const bars = model.rows.flatMap((row) => row.bars);
+    expect(bars).toHaveLength(1);
+  });
 });

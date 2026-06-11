@@ -29,6 +29,8 @@ import type { LogisticsChip, LogisticsPlan } from "./types";
 import {
   formatMatrixTick,
   formatMissionTick,
+  formatRelativeMissionTick,
+  formatMissionAxisTick,
   resolveDefaultTickInterval,
 } from "./matrixTimeScale";
 
@@ -142,6 +144,7 @@ export const CATEGORY_ORDER: SyncMatrixCategory[] = [
   "isr",
   "fires",
   "cyber",
+  "information",
   "logistics",
   "reserve",
 ];
@@ -154,6 +157,7 @@ export const CATEGORY_LABELS: Record<SyncMatrixCategory, string> = {
   isr: "ISR / Air ISR",
   fires: "Fires / Suppression",
   cyber: "Cyber / EW / Disruption",
+  information: "Information Ops / Influence",
   logistics: "Sustainment / Logistics",
   reserve: "Maneuver / Reserve",
 };
@@ -161,6 +165,13 @@ export const CATEGORY_LABELS: Record<SyncMatrixCategory, string> = {
 export {
   formatMatrixTick,
   formatMissionTick,
+  formatRelativeMissionTick,
+  formatMissionAxisTick,
+  formatRelativeColumnTick,
+  resolveNowColumnIndex,
+  playheadWithinColumnRatio,
+  missionSecToTimelineRatio,
+  columnIndexToTimelineRatio,
   matrixTickInputPlaceholder,
   matrixTimeUnitForInterval,
   normalizeTickIntervalForUnit,
@@ -174,6 +185,28 @@ export {
   MATRIX_TICK_OPTIONS,
   MATRIX_TIME_UNIT_OPTIONS,
 } from "./matrixTimeScale";
+
+function slugResourceLabel(label: string): string {
+  return (
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 48) || "unassigned-asset"
+  );
+}
+
+function manualEntryMatchesSystemBar(entry: ManualSyncEntry, bar: SyncMatrixBar): boolean {
+  if (entry.id === bar.id || entry.id === bar.actionId) return true;
+  const entryResource = slugResourceLabel(entry.actor ?? "");
+  const barResource = slugResourceLabel(bar.resourceLabel ?? bar.actor ?? "");
+  return (
+    entry.startSec === bar.startSec &&
+    entry.durationSec === bar.durationSec &&
+    entryResource === barResource &&
+    entryResource !== "unassigned-asset"
+  );
+}
 
 export function buildSyncMatrixModel(input: BuildSyncMatrixInput): SyncMatrixModel {
   const { plan, qualityContext, provisional } = input;
@@ -201,6 +234,10 @@ export function buildSyncMatrixModel(input: BuildSyncMatrixInput): SyncMatrixMod
   }
 
   for (const entry of input.manualEntries ?? []) {
+    const systemBars = [...barsByRowKey.values()].flat();
+    if (systemBars.some((bar) => manualEntryMatchesSystemBar(entry, bar))) {
+      continue;
+    }
     const rowKey = entry.rowKey ?? mapCategoryToRowKey(entry.category);
     const bar: SyncMatrixBar = {
       id: entry.id,

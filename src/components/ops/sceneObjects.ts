@@ -65,6 +65,10 @@ const TASK_VERBS = [
   "Monitor",
   "Coordinate",
   "Disrupt",
+  "Jam",
+  "Harden",
+  "Inform",
+  "Investigate",
   "Establish",
   "Screen",
   "Advance",
@@ -72,12 +76,13 @@ const TASK_VERBS = [
   "Resupply",
   "Deploy",
   "Strike",
-  "Investigate",
 ] as const;
 
 export const VERB_GROUPS: { label: string; verbs: readonly string[] }[] = [
   { label: "Maneuver", verbs: ["Advance", "Deploy", "Establish", "Screen"] },
-  { label: "Fires & effects", verbs: ["Strike", "Suppress", "Disrupt"] },
+  { label: "Fires", verbs: ["Strike", "Suppress"] },
+  { label: "Cyber & EW", verbs: ["Disrupt", "Jam", "Harden", "Investigate"] },
+  { label: "Information", verbs: ["Inform"] },
   { label: "Protection", verbs: ["Secure", "Protect", "Maintain"] },
   { label: "ISR", verbs: ["Observe", "Monitor", "Investigate"] },
   { label: "Support & C2", verbs: ["Coordinate", "Resupply"] },

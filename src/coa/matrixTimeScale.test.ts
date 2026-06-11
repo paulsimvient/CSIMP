@@ -3,6 +3,12 @@ import {
   buildMatrixTickOptions,
   formatMatrixTick,
   formatMissionTick,
+  formatRelativeMissionTick,
+  formatRelativeColumnTick,
+  resolveNowColumnIndex,
+  playheadWithinColumnRatio,
+  missionSecToTimelineRatio,
+  columnIndexToTimelineRatio,
   matrixTimeUnitForInterval,
   parseMatrixTickToSec,
   parseMissionTickToSec,
@@ -40,6 +46,26 @@ describe("matrixTimeScale", () => {
 
   it("keeps legacy mission minute formatter", () => {
     expect(formatMissionTick(15 * SEC_PER_MINUTE)).toBe("H+15");
+  });
+
+  it("rebases axis labels to current sim time at H+00", () => {
+    const origin = 5 * SEC_PER_MINUTE;
+    expect(formatRelativeMissionTick(origin, origin)).toBe("H+00");
+    expect(formatRelativeMissionTick(origin + 3 * SEC_PER_MINUTE, origin)).toBe("H+03");
+    expect(formatRelativeMissionTick(origin - 2 * SEC_PER_MINUTE, origin)).toBe("H-02");
+  });
+
+  it("aligns relative column headers with the playhead column", () => {
+    const interval = SEC_PER_MINUTE;
+    const playheadSec = 3 * SEC_PER_MINUTE + 40;
+    const now = resolveNowColumnIndex(playheadSec, interval, 8);
+    expect(now).toBe(3);
+    expect(formatRelativeColumnTick(3, now, interval)).toBe("H+00");
+    expect(formatRelativeColumnTick(1, now, interval)).toBe("H-02");
+    expect(formatRelativeColumnTick(5, now, interval)).toBe("H+02");
+    expect(playheadWithinColumnRatio(playheadSec, now, interval)).toBeCloseTo(40 / 60);
+    expect(missionSecToTimelineRatio(3 * SEC_PER_MINUTE, 8 * SEC_PER_MINUTE)).toBe(0.375);
+    expect(columnIndexToTimelineRatio(3, interval, 8 * SEC_PER_MINUTE)).toBe(0.375);
   });
 
   it("classifies tick interval into unit", () => {

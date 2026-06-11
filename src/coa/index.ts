@@ -69,6 +69,7 @@ export {
   useUpdateMatrixOverlay,
   getExecuteBlockers,
   useDiscardOperatorCoa,
+  useRemoveCoa,
   useRebaseOperatorCoa,
   useMergeOperatorIntoParent,
 } from "./store";

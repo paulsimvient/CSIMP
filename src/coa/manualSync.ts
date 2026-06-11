@@ -4,6 +4,7 @@ import {
   type SyncBarStatus,
 } from "./syncMatrix";
 import {
+  defaultActionVerbForRowKey,
   formatMatrixRowOption,
   mapCategoryToRowKey,
   parseRowKeyFromText,
@@ -25,6 +26,7 @@ export type MatrixComposerDraft = {
   rowKey: SyncGridRowKey;
   startSec: number;
   entryId?: string;
+  actionVerb?: string;
 };
 
 export type TimingUnresolved = "start" | "duration" | "end";
@@ -82,7 +84,9 @@ export type ManualSyncTarget = {
 const CATEGORY_KEYWORDS: Array<{ pattern: RegExp; category: SyncMatrixCategory }> = [
   { pattern: /\b(main effort|maneuver|advance|secure objective|assault)\b/i, category: "main-effort" },
   { pattern: /\b(isr|recon|surveillance|maintain contact|orbit|observe)\b/i, category: "isr" },
-  { pattern: /\b(cyber|disrupt|jam|degrade|sensor)\b/i, category: "cyber" },
+  { pattern: /\b(info ops|information ops|influence|counter rumor|inform)\b/i, category: "information" },
+  { pattern: /\b(harden|contain|forensic)\b/i, category: "cyber" },
+  { pattern: /\b(cyber|disrupt|jam|degrade)\b/i, category: "cyber" },
   { pattern: /\b(fires|suppress|strike|sead)\b/i, category: "fires" },
   { pattern: /\b(logistics|resupply|fuel|casevac|sustainment)\b/i, category: "logistics" },
   { pattern: /\b(security|screen|guard|preserve)\b/i, category: "security" },
@@ -90,7 +94,7 @@ const CATEGORY_KEYWORDS: Array<{ pattern: RegExp; category: SyncMatrixCategory }
 ];
 
 const ACTION_VERBS =
-  /\b(secure|maintain|disrupt|establish|reinforce|screen|suppress|observe|monitor|coordinate|resupply|deploy|advance|block|protect)\b/i;
+  /\b(secure|maintain|disrupt|jam|harden|inform|investigate|establish|reinforce|screen|suppress|observe|monitor|coordinate|resupply|deploy|advance|block|protect)\b/i;
 
 export function parseMissionOffsetSec(label: string): number | undefined {
   const match = label.match(/H\+(\d{1,3})(?::(\d{2}))?/i);
@@ -122,8 +126,9 @@ export function parseManualInstruction(
     text.match(/\b(objective\s+[A-Z]+|OBJ\s+[A-Z]+|node\s+[A-Z]+|PL\s+[A-Z]+|formation|radar site)\b/i)?.[0];
 
   let category: SyncMatrixCategory = "supporting-effort";
-  const leading = text.match(/^\s*(cyber|isr|logistics|reserve|fires)\b/i)?.[1]?.toLowerCase();
+  const leading = text.match(/^\s*(cyber|info|information|isr|logistics|reserve|fires)\b/i)?.[1]?.toLowerCase();
   if (leading === "cyber") category = "cyber";
+  else if (leading === "info" || leading === "information") category = "information";
   else if (leading === "isr") category = "isr";
   else if (leading === "logistics") category = "logistics";
   else if (leading === "reserve") category = "reserve";
@@ -405,6 +410,31 @@ export function createImportedManualEntriesFromText(
       confirmed: parsed.missingFields.length === 0,
     };
   });
+}
+
+export function createDraftManualEntryAtCell(input: {
+  rowKey: SyncGridRowKey;
+  startSec: number;
+  durationSec: number;
+}): ManualSyncEntry {
+  const category = rowKeyToLegacyCategory(input.rowKey);
+  const actionVerb = defaultActionVerbForRowKey(input.rowKey);
+  return {
+    id: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    origin: "user-added",
+    actionVerb,
+    category,
+    rowKey: input.rowKey,
+    subLabel: formatMatrixRowOption(input.rowKey),
+    startSec: input.startSec,
+    durationSec: Math.max(60, input.durationSec),
+    status: "planned",
+    confidence: "medium",
+    source: "matrix",
+    missingFields: ["actor", "target"],
+    timingUnresolved: [],
+    confirmed: false,
+  };
 }
 
 /** Build a confirmed manual entry from structured left-panel fields (not NL-only). */
