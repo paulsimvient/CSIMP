@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # CODA2 — local startup helper (stub, local Ollama, or remote LLM proxy modes).
+#
+# Optional intel ingest (broker-agnostic Kafka API + Redpanda locally):
+#   REDPANDA_INGEST=1 ./run.sh
+#   REDPANDA_INGEST=1 REDPANDA_SEED=1 ./run.sh   # also publish sample radar/AIS reports
+# Or set KAFKA_INGEST_ENABLED=true in .env with KAFKA_BROKERS=127.0.0.1:19092
 
 if [[ -z "${BASH_VERSION:-}" ]]; then
   exec bash "$0" "$@"
@@ -15,6 +20,7 @@ OLLAMA_HOST="${OLLAMA_BASE_URL#http://}"
 OLLAMA_HOST="${OLLAMA_HOST#https://}"
 OLLAMA_PID=""
 STARTED_OLLAMA=0
+STARTED_REDPANDA=0
 PORT="${PORT:-5173}"
 APP_ORIGIN_PRIMARY="http://localhost:${PORT}"
 APP_ORIGIN_SECONDARY="http://127.0.0.1:${PORT}"
@@ -23,6 +29,11 @@ APP_ORIGIN_FALLBACK_SECONDARY="http://127.0.0.1:$((PORT + 1))"
 DEFAULT_OLLAMA_ORIGINS="${APP_ORIGIN_PRIMARY},${APP_ORIGIN_SECONDARY},${APP_ORIGIN_FALLBACK_PRIMARY},${APP_ORIGIN_FALLBACK_SECONDARY}"
 RESTART_OLLAMA_WITH_ORIGINS="${RESTART_OLLAMA_WITH_ORIGINS:-0}"
 OLLAMA_PULL_MODEL="${OLLAMA_PULL_MODEL:-0}"
+REDPANDA_INGEST="${REDPANDA_INGEST:-0}"
+REDPANDA_SEED="${REDPANDA_SEED:-0}"
+REDPANDA_COMPOSE_FILE="${REDPANDA_COMPOSE_FILE:-docker-compose.redpanda.yml}"
+KAFKA_BROKERS="${KAFKA_BROKERS:-127.0.0.1:19092}"
+KAFKA_TOPIC="${KAFKA_TOPIC:-intel.raw}"
 
 info()  { printf '\033[36m→\033[0m %s\n' "$*"; }
 ok()    { printf '\033[32m✓\033[0m %s\n' "$*"; }
@@ -63,6 +74,9 @@ cleanup() {
     info "Stopping Ollama started by this script (pid $OLLAMA_PID)…"
     kill "$OLLAMA_PID" 2>/dev/null || true
     wait "$OLLAMA_PID" 2>/dev/null || true
+  fi
+  if [[ "$STARTED_REDPANDA" -eq 1 ]]; then
+    info "Leaving Redpanda running (started by this script). Stop with: npm run redpanda:down"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -205,8 +219,90 @@ load_vite_env() {
     fi
   done < .env
 }
+
+load_server_env() {
+  if [[ ! -f .env ]]; then
+    return
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^(KAFKA_[A-Za-z0-9_]+|INTEL_INGEST_[A-Za-z0-9_]+)= ]]; then
+      export "$line"
+    fi
+  done < .env
+}
 load_vite_env
+load_server_env
 set +a
+
+redpanda_ready() {
+  docker compose -f "$REDPANDA_COMPOSE_FILE" ps --status running 2>/dev/null \
+    | grep -q "coda2-redpanda" || \
+    curl -sf "http://127.0.0.1:9644/v1/status/ready" >/dev/null 2>&1
+}
+
+wait_for_redpanda() {
+  for i in $(seq 1 45); do
+    if redpanda_ready; then
+      return 0
+    fi
+    sleep 1
+    if [[ "$i" -eq 45 ]]; then
+      return 1
+    fi
+  done
+}
+
+ensure_redpanda_ingest() {
+  if [[ "$REDPANDA_INGEST" != "1" && "${KAFKA_INGEST_ENABLED:-}" != "true" ]]; then
+    return
+  fi
+
+  command -v docker >/dev/null 2>&1 || {
+    warn "REDPANDA_INGEST requested but docker not found — skipping stream ingest"
+    return
+  }
+
+  if ! docker compose version >/dev/null 2>&1; then
+    warn "docker compose not available — skipping Redpanda startup"
+    return
+  fi
+
+  if [[ ! -f "$REDPANDA_COMPOSE_FILE" ]]; then
+    warn "Missing ${REDPANDA_COMPOSE_FILE} — skipping Redpanda startup"
+    return
+  fi
+
+  export KAFKA_BROKERS="${KAFKA_BROKERS:-127.0.0.1:19092}"
+  export KAFKA_TOPIC="${KAFKA_TOPIC:-intel.raw}"
+  export KAFKA_INGEST_ENABLED="${KAFKA_INGEST_ENABLED:-true}"
+  export KAFKA_GROUP_ID="${KAFKA_GROUP_ID:-coda2-ingest}"
+  export KAFKA_CLIENT_ID="${KAFKA_CLIENT_ID:-coda2-ingest}"
+  export VITE_INTEL_INGEST_SYNC="${VITE_INTEL_INGEST_SYNC:-true}"
+  export VITE_INTEL_INGEST_AUTO_RUN="${VITE_INTEL_INGEST_AUTO_RUN:-true}"
+  export VITE_INTEL_FEED_WINDOW="${VITE_INTEL_FEED_WINDOW:-true}"
+
+  if redpanda_ready; then
+    ok "Redpanda ingest broker already running (${KAFKA_BROKERS})"
+  else
+    info "Starting Redpanda for intel ingest (${REDPANDA_COMPOSE_FILE})…"
+    docker compose -f "$REDPANDA_COMPOSE_FILE" up -d
+    STARTED_REDPANDA=1
+    if ! wait_for_redpanda; then
+      die "Redpanda did not become ready within 45s. Check: docker compose -f ${REDPANDA_COMPOSE_FILE} logs"
+    fi
+    ok "Redpanda ready on ${KAFKA_BROKERS} (topic ${KAFKA_TOPIC})"
+  fi
+
+  if [[ "$REDPANDA_SEED" == "1" ]]; then
+    info "Publishing sample intel reports to ${KAFKA_TOPIC}…"
+    KAFKA_BROKERS="$KAFKA_BROKERS" KAFKA_TOPIC="$KAFKA_TOPIC" node scripts/seed-intel-topic.mjs
+    ok "Sample intel reports published"
+  fi
+
+  ok "Intel ingest sync enabled (VITE_INTEL_INGEST_SYNC=${VITE_INTEL_INGEST_SYNC})"
+}
 
 MODEL="$(read_env_model)"
 LLM_PROVIDER="${VITE_LLM_PROVIDER:-stub}"
@@ -260,6 +356,8 @@ else
     warn "Model '$MODEL' is not available locally. Set OLLAMA_PULL_MODEL=1 to pull automatically."
   fi
 fi
+
+ensure_redpanda_ingest
 
 info "Starting dev server at http://localhost:${PORT}"
 info "Press Ctrl+C to stop"

@@ -37,6 +37,11 @@
   box-shadow: inset 0 0 0 1px rgba(74, 122, 168, 0.25);
 }
 
+:global([data-bg-theme="chrome"]) .dockTabActive {
+  border-color: #38bdf8;
+  box-shadow: inset 0 0 0 1px rgba(56, 189, 248, 0.22);
+}
+
 .dockBody {
   flex: 1;
   min-height: 0;

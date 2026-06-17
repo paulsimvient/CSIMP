@@ -276,9 +276,26 @@ export function MatrixTaskPanel({
     setStartCondition(/^(after|before|when)\b/i.test(label) ? label : `After ${label}`);
   }, []);
 
-  const canSave = Boolean(
-    actor.trim() && action.trim() && targetEntity.trim() && startTick && endTick
-  );
+  const timingValid = useMemo(() => {
+    const parsedStart = parseMissionTickToSec(startTick, tickIntervalSec) ?? startSec;
+    const parsedEnd = parseMissionTickToSec(endTick, tickIntervalSec);
+    return parsedEnd !== undefined && parsedEnd > parsedStart;
+  }, [startTick, endTick, tickIntervalSec, startSec]);
+
+  const editMissingFields = useMemo(() => {
+    if (!isEdit && !draft?.entryId) return [];
+    const missing: string[] = [];
+    if (!actor.trim()) missing.push("actor");
+    if (!action.trim()) missing.push("action");
+    if (!targetEntity.trim()) missing.push("target");
+    return missing;
+  }, [isEdit, draft?.entryId, actor, action, targetEntity]);
+
+  const isExistingDraft = Boolean(draft?.entryId);
+  const canSave =
+    isEdit || isExistingDraft
+      ? Boolean(action.trim() && timingValid)
+      : Boolean(actor.trim() && action.trim() && targetEntity.trim() && timingValid);
 
   const buildTimingPatch = () => {
     const parsedStart = parseMissionTickToSec(startTick, tickIntervalSec) ?? startSec;
@@ -329,7 +346,9 @@ export function MatrixTaskPanel({
       entryId: draft?.entryId,
     });
     onConfirm(entry);
-    composer.reset();
+    if (entry.missingFields.length === 0) {
+      composer.reset();
+    }
   };
 
   const pickBanner =
@@ -496,13 +515,19 @@ export function MatrixTaskPanel({
         </label>
       ) : null}
 
-      {isEdit && bar && bar.missingFields.length > 0 ? (
+      {isEdit && editMissingFields.length > 0 ? (
         <p className={styles.manualAuthorMissing}>
-          Needs: {bar.missingFields.join(", ")}
+          Before execute: {editMissingFields.join(", ")}
         </p>
       ) : null}
 
-      {!isEdit && nlInstruction.trim() && parsed.missingFields.length > 0 ? (
+      {!isEdit && isExistingDraft && editMissingFields.length > 0 ? (
+        <p className={styles.manualAuthorMissing}>
+          Before execute: {editMissingFields.join(", ")}
+        </p>
+      ) : null}
+
+      {!isEdit && !isExistingDraft && nlInstruction.trim() && parsed.missingFields.length > 0 ? (
         <p className={styles.manualAuthorMissing}>
           Missing: {parsed.missingFields.join(", ")}
         </p>
@@ -515,7 +540,7 @@ export function MatrixTaskPanel({
           onClick={handlePrimary}
           disabled={!canSave}
         >
-          {isEdit ? "Save task" : "Add to Matrix"}
+          {isEdit || isExistingDraft ? "Save task" : "Add to Matrix"}
         </button>
         {isEdit && bar?.isManual && onDuplicate ? (
           <button type="button" className={styles.headerButton} onClick={onDuplicate}>

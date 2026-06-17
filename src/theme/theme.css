@@ -23,6 +23,29 @@
 }
 
 :root,
+[data-bg-theme="chrome"] {
+  --bg-base: #060b14;
+  --bg-surface: #071018;
+  --bg-elevated: #0a1525;
+  --bg-panel: #081220;
+  --bg-card: #0a1525;
+  --bg-header: #050a12;
+  --bg-button: #0f2842;
+  --bg-code: #050a12;
+  --bg-badge: #0f1e30;
+  --bg-sticky: #071018;
+  --bg-assumption: #081220;
+  --bg-grounding: #0a1525;
+  --bg-root: #040810;
+  --border: #1a3350;
+  --border-accent: #1e4a6e;
+  --border-code: #1a3350;
+  --text-header: #e6f1ff;
+  --text-header-muted: #8fa8c3;
+  --accent: #3b82f6;
+  --accent-dim: #2563eb;
+}
+
 [data-bg-theme="blue"] {
   --bg-base: #101521;
   --bg-surface: #0f1117;

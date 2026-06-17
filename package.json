@@ -10,9 +10,14 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
-    "package:source": "bash scripts/package-source.sh"
+    "package:source": "bash scripts/package-source.sh",
+    "redpanda:up": "docker compose -f docker-compose.redpanda.yml up -d",
+    "redpanda:down": "docker compose -f docker-compose.redpanda.yml down",
+    "redpanda:seed": "npm run redpanda:up && node scripts/seed-intel-topic.mjs",
+    "redpanda:bench": "npm run redpanda:up && node scripts/bench-intel-ingest.mjs"
   },
   "dependencies": {
+    "kafkajs": "^2.2.4",
     "maplibre-gl": "^5.24.0",
     "pmtiles": "^4.4.1",
     "react": "^18.3.1",

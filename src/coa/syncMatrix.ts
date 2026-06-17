@@ -80,6 +80,35 @@ export type SyncMatrixBar = {
   isManual: boolean;
 };
 
+/** Build a matrix bar view from a manual overlay entry (editor / selection). */
+export function manualEntryToSyncBar(entry: ManualSyncEntry): SyncMatrixBar {
+  const rowKey = entry.rowKey ?? mapCategoryToRowKey(entry.category);
+  return {
+    id: entry.id,
+    actionId: entry.id,
+    label: manualEntryToBarLabel(entry),
+    subLabel: syncGridRowLabel(rowKey),
+    startSec: entry.startSec,
+    durationSec: entry.durationSec,
+    status: entry.status,
+    dependencies: entry.dependencyBarId ? [entry.dependencyBarId] : [],
+    dependencyLabels: entry.dependency ? [entry.dependency] : [],
+    resourceLabel: entry.actor,
+    reasons: entry.missingFields.map((field) => `Missing ${field}`),
+    fixes: entry.missingFields.map((field) => `Provide ${field} before execution`),
+    origin: entry.origin,
+    actor: entry.actor,
+    target: entry.target,
+    actionVerb: entry.actionVerb,
+    targetFactIds: entry.targetFactId ? [entry.targetFactId] : [],
+    startCondition: entry.startCondition,
+    endTimeLabel: entry.endTimeLabel,
+    missingFields: entry.missingFields,
+    rowKey,
+    isManual: true,
+  };
+}
+
 export type SyncMatrixRowKind = "section" | "meta" | "task" | "decision";
 
 export type SyncDecisionMarker = {

@@ -136,6 +136,55 @@ describe("createDraftManualEntryAtCell", () => {
   });
 });
 
+describe("partial manual task save", () => {
+  it("persists timing and row changes while actor and target remain missing", () => {
+    const draft = createDraftManualEntryAtCell({
+      rowKey: "isr::air",
+      startSec: 240,
+      durationSec: 60,
+    });
+    expect(draft.actionVerb).toBe("Observe");
+    expect(draft.missingFields).toEqual(["actor", "target"]);
+
+    const saved = validateManualEntry(
+      applyManualEntryPatch(draft, {
+        actionVerb: "Observe",
+        rowKey: "isr::air",
+        startSec: 240,
+        durationSec: 60,
+        actor: "",
+        target: "",
+        timingUnresolved: [],
+        endTimeLabel: "M+05",
+      })
+    );
+
+    expect(saved.startSec).toBe(240);
+    expect(saved.durationSec).toBe(60);
+    expect(saved.actionVerb).toBe("Observe");
+    expect(saved.missingFields).toEqual(["actor", "target"]);
+    expect(saved.confirmed).toBe(false);
+  });
+
+  it("clears missing fields once actor and target are provided", () => {
+    const draft = createDraftManualEntryAtCell({
+      rowKey: "isr::air",
+      startSec: 240,
+      durationSec: 60,
+    });
+    const complete = validateManualEntry(
+      applyManualEntryPatch(draft, {
+        actor: "GROU - Northwest coastal",
+        target: "AIR - Western air defense",
+        actionVerb: "Observe",
+        timingUnresolved: [],
+      })
+    );
+    expect(complete.missingFields).toEqual([]);
+    expect(complete.confirmed).toBe(true);
+  });
+});
+
 describe("createManualEntryFromInstruction", () => {
   it("creates a provisional user-added entry", () => {
     const entry = createManualEntryFromInstruction(

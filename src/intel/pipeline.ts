@@ -5,6 +5,7 @@ import {
   saveSqlSnapshot,
 } from "../persistence/sqlState";
 import { DEFAULT_FACT_SET_ID, loadFactSet } from "./factSets";
+import { mergeObservedFacts } from "./ingest";
 import {
   extractValidatedActions,
   extractValidatedDecisionPoints,
@@ -219,6 +220,7 @@ export async function runIntelPipeline(
 
 type IntelStore = IntelState & {
   run: (input?: RunIntelPipelineInput) => Promise<void>;
+  appendFacts: (facts: ObservedFact[]) => void;
   reset: () => void;
 };
 
@@ -253,6 +255,16 @@ export const useIntelStore = create<IntelStore>()((set) => ({
         error: message,
       });
     }
+  },
+
+  appendFacts: (incoming) => {
+    set((state) => {
+      const { facts, added } = mergeObservedFacts(state.facts, incoming);
+      if (added.length === 0) return state;
+      const next: IntelState = { ...state, facts };
+      void persistIntelState(next);
+      return next;
+    });
   },
 
   reset: () => {
@@ -297,6 +309,10 @@ export function useValidatedDecisionPoints() {
 
 export function useRunIntel() {
   return useIntelStore((s) => s.run);
+}
+
+export function useAppendObservedFacts() {
+  return useIntelStore((s) => s.appendFacts);
 }
 
 export function useResetIntel() {

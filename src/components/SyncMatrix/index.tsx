@@ -876,11 +876,6 @@ export function SyncMatrix({
             >
               <div className={styles.cornerCell}>
                 <span>Operational Function</span>
-                {playheadLabel ? (
-                  <span className={styles.playheadNowBadge} aria-live="polite">
-                    NOW · {playheadLabel}
-                  </span>
-                ) : null}
               </div>
               {tickCols.map((tick, tickIndex) => (
                 <button
@@ -1157,22 +1152,27 @@ export function SyncMatrix({
         </div>
       </div>
 
-      {!embedded ? (
-        <div className={styles.legend}>
-          {playheadLabel ? (
-            <span className={styles.legendPlayhead}>
-              <span className={styles.legendPlayheadMark} aria-hidden />
-              Playhead · {playheadLabel}
-            </span>
-          ) : null}
-          <span className={`${styles.legendPill} ${styles.statusPlanned}`}>Planned</span>
-          <span className={`${styles.legendPill} ${styles.statusContingent}`}>Contingent</span>
-          <span className={`${styles.legendPill} ${styles.statusBlocked}`}>Blocked</span>
+      <div className={embedded ? `${styles.legend} ${styles.legendEmbedded}` : styles.legend}>
+        {playheadLabel ? (
+          <span className={styles.legendPlayhead}>
+            <span className={styles.legendPlayheadMark} aria-hidden />
+            Playhead · {playheadLabel}
+          </span>
+        ) : (
+          <span className={styles.legendTimeAxis} aria-hidden>
+            <span className={styles.legendTimeAxisMark} />
+            Mission time
+          </span>
+        )}
+        <span className={`${styles.legendPill} ${styles.statusPlanned}`}>Planned</span>
+        <span className={`${styles.legendPill} ${styles.statusContingent}`}>Contingent</span>
+        <span className={`${styles.legendPill} ${styles.statusBlocked}`}>Blocked</span>
+        {!embedded ? (
           <span className={styles.legendOrigin}>
             Drag ↔ time · ↕ row · Click or Enter to edit · ←/→ nudge · Shift+←/→ resize duration
           </span>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       {!embedded ? (
         <div className={styles.footer}>

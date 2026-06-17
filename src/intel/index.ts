@@ -37,6 +37,7 @@ export type { EvidenceConflict } from "./evidence";
 export { extractValidatedActions, formatGroundingReport, validateGrounding } from "./grounding";
 export {
   runIntelPipeline,
+  useAppendObservedFacts,
   useGroundingResult,
   useIntelStatus,
   useIntelStore,
@@ -48,3 +49,11 @@ export {
   useScenarioPacket,
   useValidatedActions,
 } from "./pipeline";
+export {
+  factDedupeKey,
+  ingestPayload,
+  ingestRawReports,
+  mergeObservedFacts,
+} from "./ingest";
+export { useIngestSync } from "./useIngestSync";
+export { ingestFeedWindowEnabled, useIngestMetrics } from "./useIngestMetrics";

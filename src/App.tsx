@@ -6,6 +6,7 @@ import { OpsHeader } from "./components/ops/OpsHeader";
 import { RestartConfirmDialog } from "./components/ops/RestartConfirmDialog";
 import { OpsWorkspace } from "./components/ops/OpsWorkspace";
 import { OpsWindowsProvider } from "./components/ops/OpsWindowsContext";
+import { IngestFeedWindow } from "./components/ops/IngestFeedWindow";
 import type { MessageTrafficItem, OverviewTrack, ShowOrderItem } from "./components/ops/types";
 
 const NonOpsViews = lazy(() =>
@@ -58,6 +59,7 @@ import {
 } from "./persistence/sqlState";
 import { bootstrapPersistedState } from "./persistence/bootstrap";
 import { subscribePersistenceHealth } from "./persistence/health";
+import { useIngestSync } from "./intel/useIngestSync";
 import styles from "./App.module.css";
 
 function SectionHeader({ children }: { children: React.ReactNode }) {
@@ -243,6 +245,7 @@ function solverProgressFromStatus(
 }
 
 export function App() {
+  useIngestSync();
   const [activeView, setActiveView] = useState<
     | "overview"
     | "signals"
@@ -915,6 +918,8 @@ export function App() {
         reviewIssueCount={reviewIssueDetails.length}
         lastUpdated={summaryTime}
       />
+
+      <IngestFeedWindow />
 
       {runtimeStatus.status === "LLM_UNAVAILABLE" && (
         <div className={styles.blockedBanner}>

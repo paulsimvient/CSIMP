@@ -23,13 +23,25 @@ export function MatrixTickSelect({
   onChange,
   minSec = 0,
 }: Props) {
-  const options = useMemo(
-    () =>
-      buildMatrixTickOptions(tickIntervalSec, horizonSec).filter(
-        (opt) => opt.valueSec >= minSec
-      ),
-    [tickIntervalSec, horizonSec, minSec]
-  );
+  const options = useMemo(() => {
+    const base = buildMatrixTickOptions(tickIntervalSec, horizonSec).filter(
+      (opt) => opt.valueSec >= minSec
+    );
+    const currentSec = parseMissionTickToSec(value, tickIntervalSec);
+    if (
+      currentSec !== undefined &&
+      !base.some((opt) => opt.valueSec === currentSec)
+    ) {
+      return [
+        ...base,
+        {
+          label: value.trim() || formatMatrixTick(currentSec, tickIntervalSec),
+          valueSec: currentSec,
+        },
+      ].sort((a, b) => a.valueSec - b.valueSec);
+    }
+    return base;
+  }, [tickIntervalSec, horizonSec, minSec, value]);
 
   const selectedSec =
     parseMissionTickToSec(value, tickIntervalSec) ??

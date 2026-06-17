@@ -57,6 +57,7 @@ import {
   buildManualOnlySyncMatrix,
   buildSyncMatrixModel,
   formatMatrixTick,
+  manualEntryToSyncBar,
 } from "../../coa/syncMatrix";
 import { sectionIdForRowKey, type SyncGridRowKey } from "../../coa/syncGridSchema";
 import type { BarPatch, MatrixTimelineSeekTarget } from "@components/SyncMatrix";
@@ -540,6 +541,10 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     }
     return syncMatrixModel?.rows.flatMap((row) => row.bars) ?? [];
   }, [executedSnapshot, syncMatrixModel]);
+  const selectedSyncBarLive = useMemo(() => {
+    if (!selectedSyncBar) return null;
+    return executionBars.find((bar) => bar.id === selectedSyncBar.id) ?? selectedSyncBar;
+  }, [selectedSyncBar, executionBars]);
   const shouldRenderTaskLinks = Boolean(
     executedSnapshot ||
       (selectedCoa?.validationStatus === "validated" &&
@@ -728,7 +733,6 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     setInspectorSource("matrix");
     setInspectedFactId(undefined);
     setInspectedEventId(undefined);
-    setRightSidePanel("inspector");
   }, []);
 
   const inspectSceneObject = (factId: string) => {
@@ -840,14 +844,11 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       durationSec: syncTickIntervalSec,
     });
     setManualEntries((prev) => [...prev, entry]);
-    setComposerDraft({
-      rowKey,
-      startSec,
-      entryId: entry.id,
-      actionVerb: entry.actionVerb,
-    });
-    setSelectedSyncBar(null);
-    setPendingComposerBar(null);
+    const bar = manualEntryToSyncBar(entry);
+    setSelectedSyncBar(bar);
+    setPendingComposerBar(bar);
+    setComposerDraft(null);
+    setAuthorTarget(null);
   };
 
   const handleManualEntryUpdate = (entry: ManualSyncEntry) => {
@@ -922,33 +923,35 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
     }) => {
       const bar = selectedSyncBar;
       if (!bar) return;
+      let stillIncomplete = true;
       if (bar.isManual) {
         const entry = manualEntries.find((item) => item.id === bar.id);
-        if (entry) {
-          handleManualEntryUpdate(
-            validateManualEntry(
-              applyManualEntryPatch(entry, {
-                actor: patch.actor,
-                target: patch.target,
-                targetFactId: patch.targetFactId,
-                actionVerb: patch.actionVerb,
-                startSec: patch.startSec,
-                durationSec: patch.durationSec,
-                status: patch.status,
-                rowKey: patch.rowKey as SyncGridRowKey,
-                subLabel: patch.subLabel,
-                dependency: patch.dependency,
-                dependencyBarId: patch.dependencyBarId,
-                startCondition: patch.startCondition,
-                timingUnresolved: [],
-                endTimeLabel: formatMatrixTick(
-                  patch.startSec + patch.durationSec,
-                  syncTickIntervalSec
-                ),
-              })
-            )
-          );
-        }
+        if (!entry) return;
+        const validated = validateManualEntry(
+          applyManualEntryPatch(entry, {
+            actor: patch.actor,
+            target: patch.target,
+            targetFactId: patch.targetFactId,
+            actionVerb: patch.actionVerb,
+            startSec: patch.startSec,
+            durationSec: patch.durationSec,
+            status: patch.status,
+            rowKey: patch.rowKey as SyncGridRowKey,
+            subLabel: patch.subLabel,
+            dependency: patch.dependency,
+            dependencyBarId: patch.dependencyBarId,
+            startCondition: patch.startCondition,
+            timingUnresolved: [],
+            endTimeLabel: formatMatrixTick(
+              patch.startSec + patch.durationSec,
+              syncTickIntervalSec
+            ),
+          })
+        );
+        stillIncomplete = validated.missingFields.length > 0;
+        handleManualEntryUpdate(validated);
+        setSelectedSyncBar(manualEntryToSyncBar(validated));
+        setPendingComposerBar(manualEntryToSyncBar(validated));
       } else {
         handleBarPatch(bar.id, {
           actor: patch.actor,
@@ -961,8 +964,12 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
           subLabel: patch.subLabel,
           targetFactIds: patch.targetFactId ? [patch.targetFactId] : [],
         });
+        stillIncomplete =
+          !patch.actor?.trim() || !patch.target?.trim() || !patch.actionVerb?.trim();
       }
-      closeMatrixEditor();
+      if (!stillIncomplete) {
+        closeMatrixEditor();
+      }
     },
     [selectedSyncBar, manualEntries, syncTickIntervalSec]
   );
@@ -1153,16 +1160,16 @@ export function OpsWorkspace(props: OpsWorkspaceProps) {
       <ResizableLayout
         fillParent
         className={styles.harpoonResizableLayout}
-        defaultLeft={300}
-        defaultRight={380}
+        defaultLeft={280}
+        defaultRight={360}
         minLeft={240}
         minRight={280}
         minCenter={420}
         left={
           <aside className={styles.harpoonTaskDock} aria-label="Matrix task panel">
             <MatrixTaskPanel
-              key={selectedSyncBar?.id ?? "create"}
-              bar={selectedSyncBar ?? undefined}
+              key={selectedSyncBarLive?.id ?? "create"}
+              bar={selectedSyncBarLive ?? undefined}
               target={authorTarget ?? undefined}
               draft={composerDraft ?? undefined}
               sceneSelectionFactId={sceneSelectionFactId}

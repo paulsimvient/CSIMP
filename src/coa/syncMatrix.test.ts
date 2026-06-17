@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildLogisticsPlan } from "./logistics";
-import { buildSyncMatrixModel, formatMissionTick } from "./syncMatrix";
+import { buildSyncMatrixModel, formatMissionTick, manualEntryToSyncBar } from "./syncMatrix";
+import { createDraftManualEntryAtCell } from "./manualSync";
 
 describe("buildSyncMatrixModel", () => {
   it("groups parallel actions into operational rows with mission-time ticks", () => {
@@ -108,5 +109,20 @@ describe("buildSyncMatrixModel", () => {
     });
     const bars = model.rows.flatMap((row) => row.bars);
     expect(bars).toHaveLength(1);
+  });
+});
+
+describe("manualEntryToSyncBar", () => {
+  it("maps draft placeholders into editable manual bars", () => {
+    const entry = createDraftManualEntryAtCell({
+      rowKey: "isr::air",
+      startSec: 240,
+      durationSec: 60,
+    });
+    const bar = manualEntryToSyncBar(entry);
+    expect(bar.isManual).toBe(true);
+    expect(bar.actionVerb).toBe("Observe");
+    expect(bar.startSec).toBe(240);
+    expect(bar.missingFields).toEqual(["actor", "target"]);
   });
 });

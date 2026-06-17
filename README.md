@@ -58,6 +58,54 @@ cp .env.example .env
 | `LLM_PROXY_TIMEOUT_MS` | Proxy timeout (default 60000) |
 | `CYBER_LAB_HARNESS_URL` | Upstream lab executor for `/api/cyber-lab` proxy |
 | `CYBER_LAB_HARNESS_TIMEOUT_MS` | Lab harness proxy timeout (default 30000) |
+| `KAFKA_BROKERS` | Comma-separated brokers (Redpanda/Kafka) for intel ingest consumer |
+| `KAFKA_TOPIC` | Ingest topic (default `intel.raw`) |
+| `KAFKA_INGEST_ENABLED` | Start stream consumer when brokers are set (default true if brokers set) |
+| `INTEL_INGEST_API_KEY` | Optional bearer/API key for `POST /api/intel/ingest` |
+
+### Intel ingest (optional)
+
+Broker-agnostic **Kafka API** ingest with **Redpanda** for local development:
+
+```text
+producers → intel.raw topic → dev-server consumer → /api/intel/ingest store → browser poll → intel pipeline
+```
+
+```bash
+docker compose -f docker-compose.redpanda.yml up -d   # or: npm run redpanda:up
+# In .env: KAFKA_BROKERS=127.0.0.1:19092 KAFKA_INGEST_ENABLED=true VITE_INTEL_INGEST_SYNC=true
+npm run dev
+npm run redpanda:seed   # publish sample radar/AIS reports
+```
+
+Direct HTTP ingest (no broker):
+
+```bash
+curl -s -X POST http://127.0.0.1:5173/api/intel/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"reports":[{"reportId":"demo-1","source":"test","domain":"air","timestamp":"2026-06-04T12:00:00Z","text":"Test track"}]}'
+```
+
+### 100k throughput demo (Redpanda)
+
+Prove broker + consumer throughput — **do not** load 100k facts into the browser UI.
+
+```bash
+# Terminal 1 — broker + app with ingest consumer (no browser sync)
+REDPANDA_INGEST=1 npm run start
+# In .env for bench: VITE_INTEL_INGEST_SYNC=false  (or omit; default is off)
+
+# Terminal 2 — publish 100k synthetic reports
+npm run redpanda:bench
+# or: COUNT=100000 BATCH_SIZE=1000 npm run redpanda:bench
+
+# Watch the Intel Ingest window in the app (or curl status)
+# VITE_INTEL_FEED_WINDOW=true is set by REDPANDA_INGEST=1 ./run.sh
+```
+
+`store.acceptedTotal` and `stream.messagesConsumed` should approach 100000. The UI retains the latest 10k facts for map display; the LLM pipeline should stay disabled during the bench (`VITE_INTEL_INGEST_AUTO_RUN=false`).
+
+Status: `GET /api/intel/ingest/status`
 
 **Never put remote API keys in `VITE_*` variables** — they are bundled into the browser.
 
@@ -75,6 +123,8 @@ On startup, CODA2 hydrates intel and COA state from browser-local SQLite snapsho
 
 ```bash
 npm run start          # helper script (run.sh)
+REDPANDA_INGEST=1 npm run start              # also start Redpanda + enable ingest sync
+REDPANDA_INGEST=1 REDPANDA_SEED=1 npm run start   # publish sample intel reports
 npm run dev            # Vite dev server only
 npm run typecheck
 npm test
